@@ -218,21 +218,39 @@
                 </div>
               </div>
 
-              <!-- DURATION & RUNS -->
-              <div style="display: flex; gap: 8px;">
-                <div style="flex: 1;">
-                  <div style="font-size: 10px; font-weight: 700; color: var(--muted); margin-bottom: 2px;">DELIVERY TIME</div>
-                  <select id="auto-dur-select" class="input-entry" style="font-size: 11.5px; padding: 4px 6px;">
-                    <option value="6h">6 Hours</option>
-                    <option value="12h">12 Hours</option>
-                    <option value="24h" selected>24 Hours</option>
-                    <option value="48h">48 Hours</option>
-                    <option value="72h">72 Hours</option>
-                  </select>
+              <!-- DELIVERY TIME (PILL GROUP + CUSTOM INPUT) -->
+              <div>
+                <div style="font-size: 10.5px; font-weight: 700; color: var(--text); margin-bottom: 4px;">DELIVERY TIME</div>
+                <div style="display: flex; align-items: center; gap: 5px;">
+                  <div class="pill-group" id="auto-dur-pills">
+                    <div class="pill-item" data-dur="6h">6h</div>
+                    <div class="pill-item" data-dur="12h">12h</div>
+                    <div class="pill-item active" data-dur="24h">24h</div>
+                    <div class="pill-item" data-dur="48h">48h</div>
+                    <div class="pill-item" data-dur="custom">Custom</div>
+                  </div>
+                  <input id="auto-custom-dur" type="text" class="input-entry" value="36h" style="width: 56px; padding: 4px 6px; font-size: 11.5px; text-align: center;">
                 </div>
-                <div style="flex: 1;">
-                  <div style="font-size: 10px; font-weight: 700; color: var(--muted); margin-bottom: 2px;">NUMBER OF RUNS</div>
-                  <input id="auto-runs-val" type="number" class="input-entry" value="65" style="font-size: 11.5px; padding: 4px 6px;">
+                <div style="font-size: 10.5px; color: var(--muted); margin-top: 3px;">
+                  Total time over which all runs go out. Longer = more natural.
+                </div>
+              </div>
+
+              <!-- NUMBER OF RUNS (PILL GROUP + CUSTOM INPUT) -->
+              <div>
+                <div style="font-size: 10.5px; font-weight: 700; color: var(--text); margin-bottom: 4px;">NUMBER OF RUNS</div>
+                <div style="display: flex; align-items: center; gap: 5px;">
+                  <div class="pill-group" id="auto-runs-pills">
+                    <div class="pill-item" data-runs="auto">Auto</div>
+                    <div class="pill-item" data-runs="10">10</div>
+                    <div class="pill-item" data-runs="25">25</div>
+                    <div class="pill-item" data-runs="50">50</div>
+                    <div class="pill-item active" data-runs="custom">Custom</div>
+                  </div>
+                  <input id="auto-custom-runs" type="text" class="input-entry" value="65" style="width: 56px; padding: 4px 6px; font-size: 11.5px; text-align: center;">
+                </div>
+                <div style="font-size: 10.5px; color: var(--muted); margin-top: 3px;">
+                  Auto = follow the pattern and its gaps. A number = exactly that many runs, evenly spaced over the delivery time.
                 </div>
               </div>
 
@@ -259,18 +277,37 @@
                     <span id="comp-svc-info" style="font-size: 10.5px; color: var(--muted); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"></span>
                   </div>
 
-                  <div style="display: flex; gap: 8px;">
-                    <div style="flex: 1;">
-                      <span style="font-size: 10px; font-weight: 700; color: var(--muted); display: block;">DELIVERY TIME</span>
-                      <select id="comp-time-mode" class="input-entry" style="font-size: 11px; padding: 3px 5px;">
-                        <option value="1h" selected>1 Drop / Hour</option>
-                        <option value="match">Match Views (Every Run)</option>
-                        <option value="2h">Every 2 Hours</option>
-                      </select>
+                  <div style="display: flex; gap: 8px; align-items: center;">
+                    <span style="font-size: 11px; width: 85px;">Total Likes:</span>
+                    <input id="comp-total-qty" type="number" class="input-entry" value="500" style="width: 80px; font-size: 11.5px;">
+                    <span style="font-size: 10.5px; color: var(--muted);">(leave empty to use variance)</span>
+                  </div>
+
+                  <div>
+                    <div style="font-size: 10px; font-weight: 700; color: var(--muted); margin-bottom: 3px;">DELIVERY TIME (LIKES)</div>
+                    <div style="display: flex; align-items: center; gap: 5px;">
+                      <div class="pill-group" id="comp-dur-pills">
+                        <div class="pill-item active" data-cdur="match">Match</div>
+                        <div class="pill-item" data-cdur="6h">6h</div>
+                        <div class="pill-item" data-cdur="12h">12h</div>
+                        <div class="pill-item" data-cdur="24h">24h</div>
+                        <div class="pill-item" data-cdur="custom">Custom</div>
+                      </div>
+                      <input id="comp-custom-dur" type="text" class="input-entry" value="18h" style="width: 48px; padding: 3px 5px; font-size: 11px; text-align: center;">
                     </div>
-                    <div style="flex: 1;">
-                      <span style="font-size: 10px; font-weight: 700; color: var(--muted); display: block;">TOTAL LIKES</span>
-                      <input id="comp-total-qty" type="number" class="input-entry" value="500" style="font-size: 11px; padding: 3px 5px;">
+                  </div>
+
+                  <div>
+                    <div style="font-size: 10px; font-weight: 700; color: var(--muted); margin-bottom: 3px;">NUMBER OF RUNS (LIKES)</div>
+                    <div style="display: flex; align-items: center; gap: 5px;">
+                      <div class="pill-group" id="comp-runs-pills">
+                        <div class="pill-item active" data-cruns="auto">Auto</div>
+                        <div class="pill-item" data-cruns="5">5</div>
+                        <div class="pill-item" data-cruns="10">10</div>
+                        <div class="pill-item" data-cruns="20">20</div>
+                        <div class="pill-item" data-cruns="custom">Custom</div>
+                      </div>
+                      <input id="comp-custom-runs" type="text" class="input-entry" value="8" style="width: 48px; padding: 3px 5px; font-size: 11px; text-align: center;">
                     </div>
                   </div>
 

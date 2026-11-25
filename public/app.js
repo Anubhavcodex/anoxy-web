@@ -391,13 +391,131 @@
   }
 
   // --- TAB 3: AUTO PLAN ---
-  function initAutoPlan() {
-    document.querySelectorAll('#tab-auto .pill-item').forEach(pill => {
-      pill.addEventListener('click', () => {
-        document.querySelectorAll('#tab-auto .pill-item').forEach(p => p.classList.remove('active'));
-        pill.classList.add('active');
-        applyAutoPreset(pill.dataset.preset);
+  function getSelectedPillVal(containerId) {
+    const active = document.querySelector(`#${containerId} .pill-item.active`);
+    return active ? (active.dataset.dur || active.dataset.runs || active.dataset.cdur || active.dataset.cruns) : null;
+  }
+
+  function setSelectedPill(containerId, value) {
+    let found = false;
+    document.querySelectorAll(`#${containerId} .pill-item`).forEach(p => {
+      const v = p.dataset.dur || p.dataset.runs || p.dataset.cdur || p.dataset.cruns;
+      if (v === value) {
+        p.classList.add('active');
+        found = true;
+      } else {
+        p.classList.remove('active');
+      }
+    });
+    if (!found) {
+      document.querySelectorAll(`#${containerId} .pill-item`).forEach(p => {
+        const v = p.dataset.dur || p.dataset.runs || p.dataset.cdur || p.dataset.cruns;
+        p.classList.toggle('active', v === 'custom');
       });
+    }
+  }
+
+  function getDeliveryDurationMinutes() {
+    const pill = getSelectedPillVal('auto-dur-pills');
+    if (pill === 'custom') {
+      return parseGapString(el('auto-custom-dur').value.trim() || '24h');
+    }
+    return parseGapString(pill || '24h');
+  }
+
+  function getNumberOfRuns() {
+    const pill = getSelectedPillVal('auto-runs-pills');
+    if (pill === 'custom') {
+      return Math.max(2, parseInt(el('auto-custom-runs').value.trim()) || 65);
+    }
+    if (pill === 'auto') {
+      const durationMin = getDeliveryDurationMinutes();
+      return Math.max(2, Math.round(durationMin / 22));
+    }
+    return Math.max(2, parseInt(pill) || 25);
+  }
+
+  function getCompanionDurationMinutes(viewsDurationMin) {
+    const pill = getSelectedPillVal('comp-dur-pills');
+    if (pill === 'match') return viewsDurationMin;
+    if (pill === 'custom') return parseGapString(el('comp-custom-dur').value.trim() || '18h');
+    return parseGapString(pill || '24h');
+  }
+
+  function getCompanionRuns() {
+    const pill = getSelectedPillVal('comp-runs-pills');
+    if (pill === 'auto') {
+      const durMin = getCompanionDurationMinutes(getDeliveryDurationMinutes());
+      return Math.max(1, Math.round(durMin / 60));
+    }
+    if (pill === 'custom') {
+      return Math.max(1, parseInt(el('comp-custom-runs').value.trim()) || 8);
+    }
+    return Math.max(1, parseInt(pill) || 10);
+  }
+
+  function initAutoPlan() {
+    document.querySelectorAll('#tab-auto .pill-group:not(#auto-dur-pills):not(#auto-runs-pills):not(#comp-dur-pills):not(#comp-runs-pills) .pill-item').forEach(pill => {
+      pill.addEventListener('click', () => {
+        pill.parentElement.querySelectorAll('.pill-item').forEach(p => p.classList.remove('active'));
+        pill.classList.add('active');
+        if (pill.dataset.preset) applyAutoPreset(pill.dataset.preset);
+      });
+    });
+
+    // Delivery time pills
+    document.querySelectorAll('#auto-dur-pills .pill-item').forEach(pill => {
+      pill.addEventListener('click', () => {
+        document.querySelectorAll('#auto-dur-pills .pill-item').forEach(p => p.classList.remove('active'));
+        pill.classList.add('active');
+        if (pill.dataset.dur === 'custom') el('auto-custom-dur').focus();
+        generateAutoSchedule();
+      });
+    });
+    el('auto-custom-dur').addEventListener('input', () => {
+      setSelectedPill('auto-dur-pills', 'custom');
+      generateAutoSchedule();
+    });
+
+    // Number of runs pills
+    document.querySelectorAll('#auto-runs-pills .pill-item').forEach(pill => {
+      pill.addEventListener('click', () => {
+        document.querySelectorAll('#auto-runs-pills .pill-item').forEach(p => p.classList.remove('active'));
+        pill.classList.add('active');
+        if (pill.dataset.runs === 'custom') el('auto-custom-runs').focus();
+        generateAutoSchedule();
+      });
+    });
+    el('auto-custom-runs').addEventListener('input', () => {
+      setSelectedPill('auto-runs-pills', 'custom');
+      generateAutoSchedule();
+    });
+
+    // Companion likes pills
+    document.querySelectorAll('#comp-dur-pills .pill-item').forEach(pill => {
+      pill.addEventListener('click', () => {
+        document.querySelectorAll('#comp-dur-pills .pill-item').forEach(p => p.classList.remove('active'));
+        pill.classList.add('active');
+        if (pill.dataset.cdur === 'custom') el('comp-custom-dur').focus();
+        generateAutoSchedule();
+      });
+    });
+    el('comp-custom-dur').addEventListener('input', () => {
+      setSelectedPill('comp-dur-pills', 'custom');
+      generateAutoSchedule();
+    });
+
+    document.querySelectorAll('#comp-runs-pills .pill-item').forEach(pill => {
+      pill.addEventListener('click', () => {
+        document.querySelectorAll('#comp-runs-pills .pill-item').forEach(p => p.classList.remove('active'));
+        pill.classList.add('active');
+        if (pill.dataset.cruns === 'custom') el('comp-custom-runs').focus();
+        generateAutoSchedule();
+      });
+    });
+    el('comp-custom-runs').addEventListener('input', () => {
+      setSelectedPill('comp-runs-pills', 'custom');
+      generateAutoSchedule();
     });
 
     el('btn-toggle-adv').addEventListener('click', () => {
@@ -407,6 +525,7 @@
 
     el('auto-var-slider').addEventListener('input', (e) => {
       el('auto-var-lbl').textContent = `±${e.target.value}%`;
+      generateAutoSchedule();
     });
 
     el('comp-enabled').addEventListener('change', (e) => {
@@ -416,6 +535,7 @@
 
     el('comp-var-slider').addEventListener('input', (e) => {
       el('comp-var-lbl').textContent = `±${e.target.value}%`;
+      generateAutoSchedule();
     });
 
     el('auto-sid').addEventListener('input', () => {
@@ -445,10 +565,30 @@
     if (!p) return;
 
     el('auto-cycle-lbl').textContent = p.label;
-    el('auto-dur-select').value = p.duration;
-    el('auto-runs-val').value = p.runs;
     el('auto-var-slider').value = p.variance;
     el('auto-var-lbl').textContent = `±${p.variance}%`;
+
+    if (key === '5k') {
+      setSelectedPill('auto-dur-pills', '12h');
+      setSelectedPill('auto-runs-pills', 'custom');
+      el('auto-custom-runs').value = '32';
+    } else if (key === '10k') {
+      setSelectedPill('auto-dur-pills', '24h');
+      setSelectedPill('auto-runs-pills', 'custom');
+      el('auto-custom-runs').value = '65';
+    } else if (key === '20k') {
+      setSelectedPill('auto-dur-pills', '48h');
+      setSelectedPill('auto-runs-pills', 'custom');
+      el('auto-custom-runs').value = '130';
+    } else if (key === '1k') {
+      setSelectedPill('auto-dur-pills', '6h');
+      setSelectedPill('auto-runs-pills', '10');
+    } else if (key === '50k') {
+      setSelectedPill('auto-dur-pills', 'custom');
+      el('auto-custom-dur').value = '72h';
+      setSelectedPill('auto-runs-pills', 'custom');
+      el('auto-custom-runs').value = '200';
+    }
 
     generateAutoSchedule();
   }
@@ -456,8 +596,8 @@
   function generateAutoSchedule() {
     const preset = PRESETS[state.activePreset] || PRESETS['10k'];
     const totalViews = preset.views;
-    const durationMin = parseGapString(el('auto-dur-select').value);
-    const numRuns = Math.max(2, parseInt(el('auto-runs-val').value) || 65);
+    const durationMin = getDeliveryDurationMinutes();
+    const numRuns = getNumberOfRuns();
     const variancePct = (parseInt(el('auto-var-slider').value) || 15) / 100;
 
     // Even distribution with variance
@@ -489,28 +629,31 @@
     state.companionLikes = {};
     if (el('comp-enabled').checked) {
       const totalLikes = parseInt(el('comp-total-qty').value) || 500;
-      const mode = el('comp-time-mode').value;
+      const compRunsCount = Math.min(state.scheduleRuns.length, getCompanionRuns());
+      const compDurMin = getCompanionDurationMinutes(durationMin);
 
-      let likeIndices = [];
-      if (mode === 'match') {
-        likeIndices = state.scheduleRuns.map((_, i) => i);
-      } else {
-        const interval = mode === '2h' ? 120 : 60;
-        let last = -999;
-        state.scheduleRuns.forEach(([min], i) => {
-          if (min - last >= interval * 0.75) {
-            likeIndices.push(i);
-            last = min;
-          }
-        });
+      // Select runs within companion duration window
+      const eligibleIndices = [];
+      state.scheduleRuns.forEach(([min], i) => {
+        if (min <= compDurMin) eligibleIndices.push(i);
+      });
+      if (!eligibleIndices.length) eligibleIndices.push(0);
+
+      // Evenly sample compRunsCount indices
+      const likeIndices = [];
+      const stepSize = Math.max(1, eligibleIndices.length / compRunsCount);
+      for (let k = 0; k < compRunsCount; k++) {
+        const sampleIdx = eligibleIndices[Math.min(eligibleIndices.length - 1, Math.floor(k * stepSize))];
+        if (!likeIndices.includes(sampleIdx)) likeIndices.push(sampleIdx);
       }
+      if (!likeIndices.length) likeIndices.push(0);
 
-      if (!likeIndices.length) likeIndices = [0];
-
+      const compVariancePct = (parseInt(el('comp-var-slider').value) || 20) / 100;
       const avgLikes = totalLikes / likeIndices.length;
       let lSum = 0;
+
       likeIndices.forEach(idx => {
-        const lq = Math.max(1, Math.round(avgLikes * (1 + (Math.random() * 0.4 - 0.2))));
+        const lq = Math.max(1, Math.round(avgLikes * (1 + (Math.random() * 2 - 1) * compVariancePct)));
         state.companionLikes[idx] = lq;
         lSum += lq;
       });
