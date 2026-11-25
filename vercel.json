@@ -1,0 +1,11 @@
+{
+  "version": 2,
+  "public": true,
+  "cleanUrls": true,
+  "crons": [
+    {
+      "path": "/api/cron",
+      "schedule": "0 0 * * *"
+    }
+  ]
+}

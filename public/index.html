@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Anoxy Schedular</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+  <!-- ==================== 1. LOGIN SCREEN (EXACT APP DIALOG) ==================== -->
+  <div id="login-screen">
+    <div class="login-card">
+      <div class="login-icon">🔒</div>
+      <div class="login-title">Anoxy Schedular</div>
+      <div class="login-sub">Sign in to continue</div>
+
+      <div class="form-group">
+        <label class="form-label">Username</label>
+        <input id="login-user" type="text" class="input-entry" autocomplete="username">
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Password</label>
+        <input id="login-pass" type="password" class="input-entry" autocomplete="current-password">
+      </div>
+
+      <div class="form-group" style="display: flex; align-items: center; gap: 6px; margin-top: 6px;">
+        <input id="login-save" type="checkbox" checked>
+        <label for="login-save" style="font-size: 12px; cursor: pointer;">Save login / Auto-login</label>
+      </div>
+
+      <button id="btn-login" class="btn-accent" style="width: 100%; margin-top: 8px;">Login</button>
+      <div id="login-status" style="font-size: 11.5px; color: var(--danger); margin-top: 10px; min-height: 16px;"></div>
+    </div>
+  </div>
+
+  <!-- ==================== 2. MAIN APPLICATION WINDOW ==================== -->
+  <div id="main-app" style="display: none;">
+
+    <!-- TOP BAR -->
+    <div class="topbar">
+      <div class="topbar-left">
+        <span id="conn-dot" class="status-dot">●</span>
+        <span id="topbar-title" class="topbar-title">Not connected</span>
+        <span id="topbar-sub" class="topbar-sub"></span>
+      </div>
+      <div>
+        <button id="btn-logout" class="btn-small">Logout</button>
+      </div>
+    </div>
+
+    <!-- NOTEBOOK TABS -->
+    <div class="notebook-tabs">
+      <button class="tab-btn" data-tab="setup">⚙ 1. Setup</button>
+      <button class="tab-btn" data-tab="order">➕ 2. New order</button>
+      <button class="tab-btn active" data-tab="auto">🎲 3. Auto plan</button>
+      <button class="tab-btn" data-tab="plans">📋 4. My plans</button>
+    </div>
+
+    <!-- NOTEBOOK BODY -->
+    <div class="notebook-body">
+
+      <!-- ================= TAB 1: SETUP ================= -->
+      <div id="tab-setup" class="tab-panel">
+        <div class="panel-header">Connect to your panel</div>
+
+        <div style="max-width: 580px; display: flex; flex-direction: column; gap: 10px;">
+          <div>
+            <label class="form-label">Panel API URL</label>
+            <input id="setup-url" type="text" class="input-entry" value="https://yourpanel.com/api/v2">
+          </div>
+
+          <div>
+            <label class="form-label">API key</label>
+            <div style="display: flex; gap: 8px; align-items: center;">
+              <input id="setup-key" type="password" class="input-entry" style="flex: 1;">
+              <label style="font-size: 12px; display: flex; align-items: center; gap: 4px; white-space: nowrap; cursor: pointer;">
+                <input id="setup-show-key" type="checkbox"> Show key
+              </label>
+            </div>
+          </div>
+
+          <div style="margin-top: 6px;">
+            <button id="btn-save-connect" class="btn-accent">Save & Connect</button>
+            <span id="setup-status" style="font-size: 12px; font-weight: 700; margin-left: 10px;">Not connected</span>
+          </div>
+
+          <div style="font-size: 11.5px; color: var(--muted); margin-top: 6px; line-height: 1.5;">
+            Where to find these: in your provider panel, open Account / API.<br>
+            The key is stored only in your browser / cloud session.<br>
+            With 24/7 Cloud Engine enabled, you can turn off your PC and orders continue running on time!
+          </div>
+        </div>
+      </div>
+
+      <!-- ================= TAB 2: NEW ORDER ================= -->
+      <div id="tab-order" class="tab-panel">
+        <div style="display: flex; gap: 12px; height: 100%;">
+          
+          <!-- LEFT COLUMN: FULL HEIGHT SERVICES CATALOG -->
+          <div style="flex: 1; display: flex; flex-direction: column; min-width: 0;">
+            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
+              <span style="font-size: 12px; font-weight: 600; white-space: nowrap;">Find service:</span>
+              <input id="order-search" type="text" class="input-entry" placeholder='e.g. "instagram like"' style="flex: 1;">
+              <span style="font-size: 11px; color: var(--muted); white-space: nowrap;">Search ID, category, name</span>
+            </div>
+
+            <div class="treeview-container" style="flex: 1;">
+              <table class="treeview-table">
+                <thead>
+                  <tr>
+                    <th style="width: 60px;">ID</th>
+                    <th style="width: 140px;">CATEGORY</th>
+                    <th>NAME</th>
+                    <th style="width: 65px;">RATE</th>
+                    <th style="width: 55px;">MIN</th>
+                    <th style="width: 65px;">MAX</th>
+                  </tr>
+                </thead>
+                <tbody id="order-tree-body">
+                  <tr><td colspan="6" style="text-align: center; padding: 40px; color: var(--muted);">Loading services...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- RIGHT COLUMN: ORDER DETAILS CARD -->
+          <div style="width: 390px; background: #ffffff; border: 1px solid var(--border); border-radius: 4px; padding: 12px; display: flex; flex-direction: column; gap: 8px;">
+            <div style="font-size: 13.5px; font-weight: 700;">Order details</div>
+
+            <div>
+              <div style="font-size: 11px; font-weight: 700; color: var(--muted); margin-bottom: 2px;">SERVICE ID</div>
+              <div style="display: flex; gap: 8px; align-items: center;">
+                <input id="order-sid" type="text" class="input-entry" style="width: 85px;">
+                <span id="order-svc-info" style="font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Pick a service on the left</span>
+              </div>
+            </div>
+
+            <div>
+              <div style="font-size: 11px; font-weight: 700; color: var(--muted); margin-bottom: 2px;">POST / PROFILE LINK</div>
+              <input id="order-link" type="text" class="input-entry">
+            </div>
+
+            <div>
+              <div style="font-size: 11px; font-weight: 700; color: var(--muted); margin-bottom: 2px;">PLAN</div>
+              <input id="order-plan" type="text" class="input-entry" value="2 1h 5 30m 10">
+              <div style="font-size: 10.5px; color: var(--muted); margin-top: 2px;">
+                Numbers = qty, times = gap (e.g. 2 1h 5 30m 10, random 20m-45m)
+              </div>
+            </div>
+
+            <div>
+              <div style="display: flex; gap: 8px; align-items: center;">
+                <span style="font-size: 12px;">Default gap:</span>
+                <input id="order-gap" type="text" class="input-entry" value="1h" style="width: 65px;">
+                <span style="font-size: 11px; color: var(--muted);">(fallback gap)</span>
+              </div>
+            </div>
+
+            <div style="display: flex; gap: 8px; margin-top: 2px;">
+              <button id="btn-order-preview" class="btn-small" style="padding: 6px 14px;">Preview</button>
+              <button id="btn-order-start" class="btn-accent" style="padding: 6px 16px;">Start plan</button>
+            </div>
+
+            <div style="flex: 1; display: flex; flex-direction: column; min-height: 120px;">
+              <div style="font-size: 11px; font-weight: 700; color: var(--muted); margin-bottom: 2px;">SCHEDULE PREVIEW</div>
+              <textarea id="order-prev-box" readonly class="input-entry" style="flex: 1; resize: none; font-family: 'Consolas', monospace; font-size: 11px; background: #ffffff;"></textarea>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- ================= TAB 3: AUTO PLAN ================= -->
+      <div id="tab-auto" class="tab-panel active">
+        <div style="display: flex; gap: 12px; height: 100%;">
+
+          <!-- LEFT: CONTROLS CARD -->
+          <div style="width: 420px; background: #ffffff; border: 1px solid var(--border); border-radius: 4px; display: flex; flex-direction: column; overflow: hidden;">
+            <div style="flex: 1; overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 9px;">
+              <div style="font-size: 13.5px; font-weight: 700;">Customise delivery</div>
+              <div style="font-size: 11px; color: var(--muted);">Set the pattern, delivery time, number of runs, total and variance.</div>
+
+              <div style="display: flex; gap: 8px; align-items: center;">
+                <span style="font-size: 12px; width: 68px;">Service ID</span>
+                <input id="auto-sid" type="text" class="input-entry" style="width: 75px;">
+                <span id="auto-svc-info" style="font-size: 11px; color: var(--muted); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"></span>
+              </div>
+
+              <div>
+                <div style="font-size: 10px; font-weight: 700; color: var(--muted); margin-bottom: 2px;">POST / PROFILE LINK</div>
+                <input id="auto-link" type="text" class="input-entry">
+              </div>
+
+              <div style="height: 1px; background: var(--border); margin: 2px 0;"></div>
+
+              <div>
+                <div style="font-size: 10px; font-weight: 700; color: var(--muted); margin-bottom: 4px;">TARGET VIEWS (PRESETS)</div>
+                <div class="pill-group">
+                  <div class="pill-item" data-preset="5k">5k Views</div>
+                  <div class="pill-item active" data-preset="10k">10k Views</div>
+                  <div class="pill-item" data-preset="20k">20k Views</div>
+                  <div class="pill-item" data-preset="1k">1k</div>
+                  <div class="pill-item" data-preset="50k">50k</div>
+                  <div class="pill-item" data-preset="custom">Custom</div>
+                </div>
+                <div id="auto-cycle-lbl" style="background: #eefaf3; color: var(--success); font-weight: 700; font-size: 11.5px; padding: 4px 8px; border-radius: 4px; margin-top: 5px;">
+                  10,000 views · 24h · 65 runs (~154 views per drop, every ~22m)
+                </div>
+              </div>
+
+              <!-- ADVANCED COLLAPSIBLE -->
+              <div>
+                <span id="btn-toggle-adv" style="font-size: 11px; color: var(--muted); cursor: pointer;">▸ Advanced: Custom Pattern</span>
+                <div id="adv-pattern-box" style="display: none; margin-top: 4px;">
+                  <input id="auto-raw-pattern" type="text" class="input-entry" placeholder="e.g. 150 20m 150 25m" style="font-size: 11px;">
+                </div>
+              </div>
+
+              <!-- DURATION & RUNS -->
+              <div style="display: flex; gap: 8px;">
+                <div style="flex: 1;">
+                  <div style="font-size: 10px; font-weight: 700; color: var(--muted); margin-bottom: 2px;">DELIVERY TIME</div>
+                  <select id="auto-dur-select" class="input-entry" style="font-size: 11.5px; padding: 4px 6px;">
+                    <option value="6h">6 Hours</option>
+                    <option value="12h">12 Hours</option>
+                    <option value="24h" selected>24 Hours</option>
+                    <option value="48h">48 Hours</option>
+                    <option value="72h">72 Hours</option>
+                  </select>
+                </div>
+                <div style="flex: 1;">
+                  <div style="font-size: 10px; font-weight: 700; color: var(--muted); margin-bottom: 2px;">NUMBER OF RUNS</div>
+                  <input id="auto-runs-val" type="number" class="input-entry" value="65" style="font-size: 11.5px; padding: 4px 6px;">
+                </div>
+              </div>
+
+              <div>
+                <div style="display: flex; justify-content: space-between; font-size: 10.5px; margin-bottom: 2px;">
+                  <span style="font-weight: 700; color: var(--muted);">RANDOM VARIANCE (PER DROP)</span>
+                  <span id="auto-var-lbl" style="font-weight: 700;">±15%</span>
+                </div>
+                <input id="auto-var-slider" type="range" min="0" max="50" value="15" style="width: 100%;">
+              </div>
+
+              <div style="height: 1px; background: var(--border); margin: 2px 0;"></div>
+
+              <!-- 2ND SERVICE: COMPANION LIKES -->
+              <div style="background: #fafbfe; border: 1px solid var(--border); border-radius: 4px; padding: 8px;">
+                <label style="font-size: 11.5px; font-weight: 700; display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                  <input id="comp-enabled" type="checkbox"> Add 2nd service (companion likes) to this schedule
+                </label>
+
+                <div id="comp-box" style="display: none; margin-top: 8px; flex-direction: column; gap: 6px;">
+                  <div style="display: flex; gap: 8px; align-items: center;">
+                    <span style="font-size: 11px; width: 85px;">Likes Service ID:</span>
+                    <input id="comp-sid" type="text" class="input-entry" style="width: 70px;">
+                    <span id="comp-svc-info" style="font-size: 10.5px; color: var(--muted); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"></span>
+                  </div>
+
+                  <div style="display: flex; gap: 8px;">
+                    <div style="flex: 1;">
+                      <span style="font-size: 10px; font-weight: 700; color: var(--muted); display: block;">DELIVERY TIME</span>
+                      <select id="comp-time-mode" class="input-entry" style="font-size: 11px; padding: 3px 5px;">
+                        <option value="1h" selected>1 Drop / Hour</option>
+                        <option value="match">Match Views (Every Run)</option>
+                        <option value="2h">Every 2 Hours</option>
+                      </select>
+                    </div>
+                    <div style="flex: 1;">
+                      <span style="font-size: 10px; font-weight: 700; color: var(--muted); display: block;">TOTAL LIKES</span>
+                      <input id="comp-total-qty" type="number" class="input-entry" value="500" style="font-size: 11px; padding: 3px 5px;">
+                    </div>
+                  </div>
+
+                  <div>
+                    <div style="display: flex; justify-content: space-between; font-size: 10.5px;">
+                      <span style="color: var(--muted); font-size: 10px; font-weight: 700;">LIKES VARIANCE</span>
+                      <span id="comp-var-lbl">±20%</span>
+                    </div>
+                    <input id="comp-var-slider" type="range" min="0" max="50" value="20" style="width: 100%;">
+                  </div>
+                </div>
+              </div>
+
+            </div>
+
+            <!-- PINNED BOTTOM BUTTON -->
+            <div style="padding: 10px 14px; border-top: 1px solid var(--border); background: #ffffff;">
+              <button id="btn-auto-generate" class="btn-accent" style="width: 100%; padding: 8px;">Generate schedule</button>
+            </div>
+          </div>
+
+          <!-- RIGHT: SCHEDULE PREVIEW PANEL -->
+          <div style="flex: 1; display: flex; flex-direction: column; min-width: 0;">
+            
+            <!-- STATS ROW (EXACT CARDS) -->
+            <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+              <div class="stat-box">
+                <div id="stat-runs" class="stat-box-val">–</div>
+                <div class="stat-box-title">RUNS</div>
+              </div>
+              <div class="stat-box">
+                <div id="stat-gap" class="stat-box-val">–</div>
+                <div class="stat-box-title">AVG GAP</div>
+              </div>
+              <div class="stat-box">
+                <div id="stat-finish" class="stat-box-val" style="font-size: 12px; line-height: 1.8;">–</div>
+                <div class="stat-box-title">FINISH</div>
+              </div>
+              <div class="stat-box">
+                <div id="stat-total" class="stat-box-val" style="color: var(--accent);">–</div>
+                <div class="stat-box-title">TOTAL</div>
+              </div>
+              <div class="stat-box">
+                <div id="stat-cost" class="stat-box-val" style="color: var(--success); font-size: 14px;">–</div>
+                <div class="stat-box-title">EST. COST</div>
+              </div>
+            </div>
+
+            <!-- PREVIEW TREEVIEW -->
+            <div class="treeview-container" style="flex: 1;">
+              <table class="treeview-table">
+                <thead>
+                  <tr>
+                    <th style="width: 45px;">#</th>
+                    <th style="width: 130px;">WHEN</th>
+                    <th style="width: 85px;">GAP</th>
+                    <th style="width: 130px;">QTY</th>
+                    <th style="width: 75px;">TOTAL</th>
+                    <th style="width: 110px;">ACTIONS</th>
+                  </tr>
+                </thead>
+                <tbody id="auto-tree-body">
+                  <tr>
+                    <td colspan="6" style="text-align: center; padding: 60px; color: var(--muted);">
+                      No schedule yet.<br>Pick a pattern and press “Generate schedule”.
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <!-- BOTTOM START ACTION -->
+            <div style="margin-top: 8px; display: flex; justify-content: flex-end; gap: 8px;">
+              <button id="btn-auto-start" class="btn-accent" style="padding: 8px 24px; font-size: 13.5px;">
+                ⚡ Start plan (Run in 24/7 Cloud)
+              </button>
+            </div>
+
+          </div>
+
+        </div>
+      </div>
+
+      <!-- ================= TAB 4: MY PLANS ================= -->
+      <div id="tab-plans" class="tab-panel">
+        <div class="panel-header">Your scheduled plans</div>
+        
+        <div style="font-size: 12px; margin-bottom: 4px;">Plans (newest first)</div>
+        <div class="treeview-container" style="height: 140px; margin-bottom: 10px;">
+          <table class="treeview-table">
+            <thead>
+              <tr>
+                <th style="width: 120px;">PLAN</th>
+                <th>LINK</th>
+                <th style="width: 80px;">SERVICE</th>
+                <th style="width: 70px;">STEPS</th>
+                <th style="width: 80px;">PENDING</th>
+                <th style="width: 70px;">SENT</th>
+                <th style="width: 80px;">QTY</th>
+                <th style="width: 140px;">NEXT</th>
+              </tr>
+            </thead>
+            <tbody id="plans-tree-body">
+              <tr><td colspan="8" style="text-align: center; padding: 25px; color: var(--muted);">No plans running yet.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div style="font-size: 12px; margin-bottom: 4px;">Steps of the selected plan · only a 'pending' step can be edited</div>
+        <div class="treeview-container" style="flex: 1;">
+          <table class="treeview-table">
+            <thead>
+              <tr>
+                <th style="width: 45px;">NO</th>
+                <th style="width: 100px;">SERVICE</th>
+                <th style="width: 70px;">QTY</th>
+                <th style="width: 140px;">WHEN</th>
+                <th style="width: 85px;">STATUS</th>
+                <th style="width: 100px;">PROVIDER</th>
+                <th style="width: 90px;">ORDER</th>
+                <th>NOTE</th>
+              </tr>
+            </thead>
+            <tbody id="steps-tree-body">
+              <tr><td colspan="8" style="text-align: center; padding: 40px; color: var(--muted);">Select a plan above to view its steps.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div style="margin-top: 8px; display: flex; gap: 5px; flex-wrap: wrap;">
+          <button id="btn-plan-cancel" class="btn-danger">Cancel plan</button>
+          <button id="btn-plan-refresh" class="btn-small">Refresh</button>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- ACTIVITY LOG (EXACT SAME TERMINAL AS APPLICATION) -->
+    <div class="activity-log">
+      <div class="log-label">Activity log</div>
+      <div id="log-box" class="log-box"></div>
+    </div>
+
+  </div>
+
+  <!-- EDIT STEP MODAL (EXACT SAME AS DESKTOP EDIT MODAL) -->
+  <div id="modal-edit" class="modal-overlay hidden">
+    <div class="modal-card">
+      <div style="font-size: 13.5px; font-weight: 700; margin-bottom: 12px;">Edit step</div>
+      
+      <div class="form-group">
+        <label class="form-label">Views Quantity</label>
+        <input id="edit-views-qty" type="number" class="input-entry">
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Delay (minutes from start)</label>
+        <input id="edit-delay" type="number" class="input-entry">
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Companion Likes Quantity (0 = remove)</label>
+        <input id="edit-likes-qty" type="number" class="input-entry">
+      </div>
+
+      <div style="display: flex; justify-content: flex-end; gap: 6px; margin-top: 14px;">
+        <button id="btn-edit-cancel" class="btn-small">Cancel</button>
+        <button id="btn-edit-save" class="btn-accent" style="padding: 5px 16px;">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

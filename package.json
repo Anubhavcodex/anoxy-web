@@ -1,0 +1,11 @@
+{
+  "name": "anoxy-web",
+  "version": "1.0.0",
+  "description": "Anoxy Schedular Cloud - 24/7 Serverless Drip-Feed Web App for SMM Panels",
+  "main": "api/cron.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}
