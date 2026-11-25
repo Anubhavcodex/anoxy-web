@@ -229,7 +229,7 @@
                     <div class="pill-item" data-dur="48h">48h</div>
                     <div class="pill-item" data-dur="custom">Custom</div>
                   </div>
-                  <input id="auto-custom-dur" type="text" class="input-entry" value="36h" style="width: 56px; padding: 4px 6px; font-size: 11.5px; text-align: center;">
+                  <input id="auto-custom-dur" type="text" class="input-entry" value="36h" style="width: 56px; padding: 4px 6px; font-size: 11.5px; text-align: center;" disabled>
                 </div>
                 <div style="font-size: 10.5px; color: var(--muted); margin-top: 3px;">
                   Total time over which all runs go out. Longer = more natural.
@@ -261,7 +261,7 @@
                   <input id="auto-total-views" type="text" class="input-entry" value="10000" style="width: 80px; padding: 4px 8px; font-size: 12px;">
                   <button id="btn-auto-scale" class="btn-small" style="font-weight: 600; padding: 4px 10px;">Auto-scale Time & Runs</button>
                   <label style="font-size: 12px; display: flex; align-items: center; gap: 4px; cursor: pointer;">
-                    <input id="auto-spread-chk" type="checkbox" checked> Spread
+                    <input id="auto-spread-chk" type="checkbox" checked disabled> Spread
                   </label>
                 </div>
                 <div style="font-size: 10.5px; color: var(--muted); margin-top: 3px;">
@@ -272,9 +272,9 @@
               <div>
                 <div style="display: flex; justify-content: space-between; font-size: 10.5px; margin-bottom: 2px;">
                   <span style="font-weight: 700; color: var(--text);">RANDOM VARIANCE</span>
-                  <span id="auto-var-lbl" style="font-weight: 700; color: var(--success); background: #e7f6ee; padding: 1px 6px; border-radius: 3px;">±15%</span>
+                  <span id="auto-var-lbl" style="font-weight: 700; color: var(--success); background: #e7f6ee; padding: 1px 6px; border-radius: 3px;">±20%</span>
                 </div>
-                <input id="auto-var-slider" type="range" min="0" max="50" value="15" style="width: 100%;">
+                <input id="auto-var-slider" type="range" min="0" max="50" value="20" style="width: 100%;">
                 <div style="font-size: 10.5px; color: var(--muted); margin-top: 2px;">
                   Nudges each quantity (and any fixed gap) up or down by up to this much. Higher = less patterned.
                 </div>
@@ -320,7 +320,7 @@
                         <div class="pill-item" data-cdur="24h">24h</div>
                         <div class="pill-item" data-cdur="custom">Custom</div>
                       </div>
-                      <input id="comp-custom-dur" type="text" class="input-entry" value="18h" style="width: 48px; padding: 3px 5px; font-size: 11px; text-align: center;">
+                      <input id="comp-custom-dur" type="text" class="input-entry" value="18h" style="width: 48px; padding: 3px 5px; font-size: 11px; text-align: center;" disabled>
                     </div>
                     <div style="font-size: 10px; color: var(--muted); margin-top: 2px;">
                       'Match' spreads likes across full views span, or stop earlier.
@@ -337,7 +337,7 @@
                         <div class="pill-item" data-cruns="20">20</div>
                         <div class="pill-item" data-cruns="custom">Custom</div>
                       </div>
-                      <input id="comp-custom-runs" type="text" class="input-entry" value="8" style="width: 48px; padding: 3px 5px; font-size: 11px; text-align: center;">
+                      <input id="comp-custom-runs" type="text" class="input-entry" value="8" style="width: 48px; padding: 3px 5px; font-size: 11px; text-align: center;" disabled>
                     </div>
                   </div>
 
@@ -351,7 +351,7 @@
                         <div class="pill-item" data-cint="2h">2h</div>
                         <div class="pill-item" data-cint="custom">Custom</div>
                       </div>
-                      <input id="comp-custom-int" type="text" class="input-entry" value="45m" style="width: 48px; padding: 3px 5px; font-size: 11px; text-align: center;">
+                      <input id="comp-custom-int" type="text" class="input-entry" value="45m" style="width: 48px; padding: 3px 5px; font-size: 11px; text-align: center;" disabled>
                     </div>
                     <div style="font-size: 10px; color: var(--muted); margin-top: 2px;">
                       Auto = drop by interval. Number = pick that many view runs.
@@ -386,6 +386,16 @@
           <!-- RIGHT: SCHEDULE PREVIEW PANEL -->
           <div style="flex: 1; display: flex; flex-direction: column; min-width: 0;">
             
+            <!-- PREVIEW HEADER -->
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+              <div style="font-size: 12.5px; font-weight: 700; color: var(--text);">Schedule preview</div>
+              <div style="display: flex; gap: 6px;">
+                <button id="btn-auto-import" class="btn-small" style="padding: 2px 8px; font-size: 11px;">Import</button>
+                <button id="btn-auto-export" class="btn-small" style="padding: 2px 8px; font-size: 11px;">Export</button>
+                <input id="file-import-input" type="file" accept=".json" style="display: none;">
+              </div>
+            </div>
+
             <!-- STATS ROW (EXACT CARDS) -->
             <div style="display: flex; gap: 8px; margin-bottom: 8px;">
               <div class="stat-box">
@@ -415,12 +425,12 @@
               <table class="treeview-table">
                 <thead>
                   <tr>
-                    <th style="width: 45px;">#</th>
+                    <th style="width: 45px;">RUN</th>
                     <th style="width: 130px;">WHEN</th>
                     <th style="width: 85px;">GAP</th>
                     <th style="width: 130px;">QTY</th>
                     <th style="width: 75px;">TOTAL</th>
-                    <th style="width: 110px;">ACTIONS</th>
+                    <th style="width: 110px;"></th>
                   </tr>
                 </thead>
                 <tbody id="auto-tree-body">
@@ -433,8 +443,12 @@
               </table>
             </div>
 
-            <!-- BOTTOM START ACTION -->
-            <div style="margin-top: 8px; display: flex; justify-content: flex-end; gap: 8px;">
+            <!-- BOTTOM ACTIONS (EXACT APPLICATION BAR) -->
+            <div style="margin-top: 8px; display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+              <div style="display: flex; gap: 6px;">
+                <button id="btn-auto-add" class="btn-small" style="padding: 6px 12px; font-weight: 600;">+ Add custom run</button>
+                <button id="btn-auto-regenerate" class="btn-small" style="padding: 6px 12px; font-weight: 600;">Regenerate</button>
+              </div>
               <button id="btn-auto-start" class="btn-accent" style="padding: 8px 24px; font-size: 13.5px;">
                 ⚡ Start plan (Run in 24/7 Cloud)
               </button>
@@ -465,7 +479,7 @@
               </tr>
             </thead>
             <tbody id="plans-tree-body">
-              <tr><td colspan="8" style="text-align: center; padding: 25px; color: var(--muted);">No plans running yet.</td></tr>
+              <tr><td colspan="8" style="text-align: center; padding: 25px; color: var(--muted);">No plans scheduled yet.</td></tr>
             </tbody>
           </table>
         </div>
@@ -491,8 +505,13 @@
           </table>
         </div>
 
+        <!-- ACTION BUTTONS EXACT MATCH TO DESKTOP -->
         <div style="margin-top: 8px; display: flex; gap: 5px; flex-wrap: wrap;">
-          <button id="btn-plan-cancel" class="btn-danger">Cancel plan</button>
+          <button id="btn-step-qty" class="btn-small">Change quantity</button>
+          <button id="btn-step-move" class="btn-small">Move step (from now)</button>
+          <button id="btn-step-shift" class="btn-small">Shift this + later steps</button>
+          <button id="btn-step-del" class="btn-danger" style="padding: 4px 10px;">Delete step</button>
+          <button id="btn-plan-cancel" class="btn-danger" style="padding: 4px 10px;">Cancel plan</button>
           <button id="btn-plan-refresh" class="btn-small">Refresh</button>
         </div>
       </div>
@@ -510,26 +529,77 @@
   <!-- EDIT STEP MODAL (EXACT SAME AS DESKTOP EDIT MODAL) -->
   <div id="modal-edit" class="modal-overlay hidden">
     <div class="modal-card">
-      <div style="font-size: 13.5px; font-weight: 700; margin-bottom: 12px;">Edit step</div>
+      <div style="font-size: 13.5px; font-weight: 700; margin-bottom: 12px;" id="modal-edit-title">Edit run</div>
       
       <div class="form-group">
-        <label class="form-label">Views Quantity</label>
+        <label class="form-label" id="modal-edit-qty-lbl">Views Quantity</label>
         <input id="edit-views-qty" type="number" class="input-entry">
       </div>
 
       <div class="form-group">
-        <label class="form-label">Delay (minutes from start)</label>
-        <input id="edit-delay" type="number" class="input-entry">
+        <label class="form-label" id="modal-edit-gap-lbl">Gap after previous run (e.g. 30m, 1h, 45m)</label>
+        <input id="edit-gap" type="text" class="input-entry">
       </div>
 
-      <div class="form-group">
+      <div class="form-group" id="edit-likes-group">
         <label class="form-label">Companion Likes Quantity (0 = remove)</label>
         <input id="edit-likes-qty" type="number" class="input-entry">
       </div>
 
+      <div id="edit-shift-group" class="form-group" style="display: flex; align-items: center; gap: 6px; margin-top: 6px;">
+        <label style="font-size: 11.5px; display: flex; align-items: center; gap: 6px; cursor: pointer;">
+          <input id="edit-shift-chk" type="checkbox" checked>
+          Move all later runs by the same amount
+        </label>
+      </div>
+
       <div style="display: flex; justify-content: flex-end; gap: 6px; margin-top: 14px;">
         <button id="btn-edit-cancel" class="btn-small">Cancel</button>
-        <button id="btn-edit-save" class="btn-accent" style="padding: 5px 16px;">Save</button>
+        <button id="btn-edit-save" class="btn-accent" style="padding: 5px 16px;">Apply</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ADD CUSTOM RUN MODAL -->
+  <div id="modal-add" class="modal-overlay hidden">
+    <div class="modal-card">
+      <div style="font-size: 13.5px; font-weight: 700; margin-bottom: 12px;">Add custom run</div>
+      
+      <div class="form-group">
+        <label class="form-label">Views Quantity</label>
+        <input id="add-views-qty" type="number" class="input-entry" value="150">
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Gap after last run (e.g. 30m, 1h, 45m)</label>
+        <input id="add-gap" type="text" class="input-entry" value="30m">
+      </div>
+
+      <div class="form-group" id="add-likes-group">
+        <label class="form-label">Companion Likes Quantity (optional)</label>
+        <input id="add-likes-qty" type="number" class="input-entry" placeholder="Leave empty for none">
+      </div>
+
+      <div style="display: flex; justify-content: flex-end; gap: 6px; margin-top: 14px;">
+        <button id="btn-add-cancel" class="btn-small">Cancel</button>
+        <button id="btn-add-save" class="btn-accent" style="padding: 5px 16px;">Add run</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- EDIT PLAN STEP MODAL -->
+  <div id="modal-step" class="modal-overlay hidden">
+    <div class="modal-card">
+      <div style="font-size: 13.5px; font-weight: 700; margin-bottom: 12px;" id="modal-step-title">Edit step</div>
+      
+      <div class="form-group">
+        <label class="form-label" id="modal-step-lbl">Value</label>
+        <input id="step-edit-val" type="text" class="input-entry">
+      </div>
+
+      <div style="display: flex; justify-content: flex-end; gap: 6px; margin-top: 14px;">
+        <button id="btn-step-cancel" class="btn-small">Cancel</button>
+        <button id="btn-step-save" class="btn-accent" style="padding: 5px 16px;">Save</button>
       </div>
     </div>
   </div>

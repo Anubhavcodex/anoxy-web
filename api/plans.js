@@ -1,4 +1,4 @@
-// api/plans.js - Manages saving and listing scheduled plans
+// api/plans.js - Manages saving, listing, and updating scheduled plans
 const https = require('https');
 
 const DEFAULT_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyq43d3TxNxQ8bdG_Ih_n0K0gfhQNkW6oTQ6uSo_FxsQCkUh3_m4xHQ5Z_xZsJWAxEv/exec';
@@ -36,7 +36,7 @@ function postGoogle(url, data) {
 
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
   if (req.method === 'OPTIONS') return res.status(200).end();
@@ -88,6 +88,15 @@ module.exports = async (req, res) => {
         res.status(200).json(JSON.parse(out));
       } catch {
         res.status(200).json({ plans: [], steps: [] });
+      }
+    } else if (req.method === 'PUT') {
+      // Update individual step (quantity, run_at, status)
+      const payload = { action: 'update_step', ...(req.body || {}) };
+      const out = await postGoogle(scriptUrl, payload);
+      try {
+        res.status(200).json(JSON.parse(out));
+      } catch {
+        res.status(200).json({ status: 'ok' });
       }
     } else if (req.method === 'DELETE') {
       const { plan_id } = req.body || req.query || {};

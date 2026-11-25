@@ -426,3 +426,15 @@ body {
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.15);
   padding: 16px 20px;
 }
+
+.treeview-table tbody tr.selected {
+  background-color: #e8ebf7 !important;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.input-entry:disabled {
+  background: #f0f2f5 !important;
+  color: #9aa1b2 !important;
+  cursor: not-allowed;
+}
