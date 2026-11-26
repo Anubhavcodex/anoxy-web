@@ -1,5 +1,6 @@
 // api/plans.js - Manages saving, listing, and updating scheduled plans
 const https = require('https');
+const { dispatchDueSteps } = require('./cron');
 
 const DEFAULT_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyq43d3TxNxQ8bdG_Ih_n0K0gfhQNkW6oTQ6uSo_FxsQCkUh3_m4xHQ5Z_xZsJWAxEv/exec';
 
@@ -78,6 +79,14 @@ module.exports = async (req, res) => {
       };
 
       const out = await postGoogle(scriptUrl, payload);
+
+      // Immediately dispatch any due step (like step 1 'now') directly to provider (exact desktop parity)
+      try {
+        await dispatchDueSteps(scriptUrl);
+      } catch (dispatchErr) {
+        console.error('Instant step dispatch error:', dispatchErr.message);
+      }
+
       try {
         res.status(200).json(JSON.parse(out));
       } catch {

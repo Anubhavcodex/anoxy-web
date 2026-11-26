@@ -453,6 +453,22 @@
     initAutoPlan();
     initPlans();
     initModals();
+
+    // Live background runner while the web app tab is open (exact desktop tick() parity)
+    setInterval(() => {
+      if (!state.user) return;
+      const scriptUrl = localStorage.getItem('anoxy_script_url') || '';
+      const qs = scriptUrl ? `?script_url=${encodeURIComponent(scriptUrl)}` : '';
+      fetch('/api/cron' + qs)
+        .then(r => r.json())
+        .then(d => {
+          if (d && d.dispatched && d.dispatched > 0) {
+            log(`Cloud Engine auto-dispatched ${d.dispatched} due drop(s) to provider.`);
+            refreshPlans();
+          }
+        })
+        .catch(() => {});
+    }, 15000);
   });
 
   // --- AUTH ---
@@ -1935,7 +1951,8 @@
       const data = await res.json();
       if (data.status === 'ok' || data.plan_id) {
         log(`Plan started with ${steps.length} scheduled step(s) in 24/7 Cloud.`);
-        alert('Plan started successfully in 24/7 Cloud!\n\nYou can now turn off your PC. Cloud will execute all drops automatically.');
+        fetch('/api/cron' + (scriptUrl ? `?script_url=${encodeURIComponent(scriptUrl)}` : '')).catch(() => {});
+        alert('Plan started successfully in 24/7 Cloud!\n\nYour first drop is being dispatched to your provider right now.\n\nYou can now turn off your PC. Cloud will execute all subsequent drops automatically.');
         switchTab('plans');
       } else if (data.message && data.message.includes('Missing username or password')) {
         alert("Google Sheet Apps Script Update Required:\n\nYour Google Sheet currently has the old login-only script.\n\nTo enable 24/7 Cloud Plans:\n1. Open your Google Sheet → Extensions → Apps Script\n2. Replace all code by pasting 'google_apps_script.js'\n3. Click Deploy → Manage deployments → Edit (pencil icon)\n4. Select Version: 'New version' and click Deploy.");

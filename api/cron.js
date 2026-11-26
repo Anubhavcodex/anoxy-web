@@ -68,87 +68,96 @@ function postRequest(url, data, isJson = true, redirectCount = 0) {
   });
 }
 
+async function dispatchDueSteps(targetScriptUrl) {
+  const now = Date.now();
+  const scriptUrl = targetScriptUrl || process.env.GOOGLE_SCRIPT_URL || DEFAULT_SCRIPT_URL;
+
+  // 1. Ask Google Apps Script for due steps (status == 'pending' AND run_at <= now)
+  const rawDue = await postRequest(scriptUrl, { action: 'get_due_steps', now: now }, true);
+  let dueSteps = [];
+  try {
+    const parsed = JSON.parse(rawDue);
+    dueSteps = parsed.steps || [];
+  } catch {
+    dueSteps = [];
+  }
+
+  if (!dueSteps.length) {
+    return { status: 'ok', dispatched: 0, message: 'No steps due' };
+  }
+
+  const results = [];
+
+  // 2. Dispatch each due step to SMM panel
+  for (const step of dueSteps) {
+    const { step_id, api_url, api_key, service_id, link, quantity } = step;
+
+    try {
+      const payload = new URLSearchParams();
+      payload.append('key', api_key);
+      payload.append('action', 'add');
+      payload.append('service', service_id);
+      payload.append('link', link);
+      payload.append('quantity', quantity);
+
+      const panelResp = await postRequest(api_url, payload, false);
+      let orderId = null;
+      let isSuccess = false;
+      let errorMsg = '';
+
+      try {
+        const pData = JSON.parse(panelResp);
+        if (pData.order) {
+          orderId = pData.order;
+          isSuccess = true;
+        } else if (pData.error) {
+          errorMsg = pData.error;
+        }
+      } catch {
+        errorMsg = panelResp.substring(0, 100);
+      }
+
+      // 3. Report result back to Google Sheet
+      await postRequest(scriptUrl, {
+        action: 'update_step',
+        step_id: step_id,
+        status: isSuccess ? 'sent' : 'failed',
+        order_id: orderId || '',
+        error: errorMsg || ''
+      }, true);
+
+      results.push({ step_id, success: isSuccess, order: orderId, error: errorMsg });
+    } catch (stepErr) {
+      await postRequest(scriptUrl, {
+        action: 'update_step',
+        step_id: step_id,
+        status: 'failed',
+        error: stepErr.message
+      }, true);
+      results.push({ step_id, success: false, error: stepErr.message });
+    }
+  }
+
+  return {
+    status: 'ok',
+    dispatched: results.length,
+    timestamp: new Date().toISOString(),
+    results: results
+  };
+}
+
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  const now = Date.now();
   const scriptUrl = (req.query && (req.query.script_url || req.query.scriptUrl)) ||
                     process.env.GOOGLE_SCRIPT_URL ||
                     DEFAULT_SCRIPT_URL;
 
   try {
-    // 1. Ask Google Apps Script for due steps (status == 'pending' AND run_at <= now)
-    const rawDue = await postRequest(scriptUrl, { action: 'get_due_steps', now: now }, true);
-    let dueSteps = [];
-    try {
-      const parsed = JSON.parse(rawDue);
-      dueSteps = parsed.steps || [];
-    } catch {
-      dueSteps = [];
-    }
-
-    if (!dueSteps.length) {
-      return res.status(200).json({ status: 'ok', dispatched: 0, message: 'No steps due' });
-    }
-
-    const results = [];
-
-    // 2. Dispatch each due step to SMM panel
-    for (const step of dueSteps) {
-      const { step_id, api_url, api_key, service_id, link, quantity } = step;
-
-      try {
-        const payload = new URLSearchParams();
-        payload.append('key', api_key);
-        payload.append('action', 'add');
-        payload.append('service', service_id);
-        payload.append('link', link);
-        payload.append('quantity', quantity);
-
-        const panelResp = await postRequest(api_url, payload, false);
-        let orderId = null;
-        let isSuccess = false;
-        let errorMsg = '';
-
-        try {
-          const pData = JSON.parse(panelResp);
-          if (pData.order) {
-            orderId = pData.order;
-            isSuccess = true;
-          } else if (pData.error) {
-            errorMsg = pData.error;
-          }
-        } catch {
-          errorMsg = panelResp.substring(0, 100);
-        }
-
-        // 3. Report result back to Google Sheet
-        await postRequest(scriptUrl, {
-          action: 'update_step',
-          step_id: step_id,
-          status: isSuccess ? 'sent' : 'failed',
-          order_id: orderId || '',
-          error: errorMsg || ''
-        }, true);
-
-        results.push({ step_id, success: isSuccess, order: orderId, error: errorMsg });
-      } catch (stepErr) {
-        await postRequest(scriptUrl, {
-          action: 'update_step',
-          step_id: step_id,
-          status: 'failed',
-          error: stepErr.message
-        }, true);
-        results.push({ step_id, success: false, error: stepErr.message });
-      }
-    }
-
-    res.status(200).json({
-      status: 'ok',
-      dispatched: results.length,
-      timestamp: new Date().toISOString(),
-      results: results
-    });
+    const out = await dispatchDueSteps(scriptUrl);
+    res.status(200).json(out);
   } catch (err) {
     res.status(500).json({ status: 'error', message: err.message });
   }
 };
+
+module.exports.dispatchDueSteps = dispatchDueSteps;
