@@ -627,6 +627,9 @@
       if (compSid && state.services[compSid]) {
         const cs = state.services[compSid];
         el('comp-svc-info').textContent = `${cs.name.slice(0, 24)} (min ${cs.min}, max ${cs.max}, rate ${cs.rate})`;
+        const badge = el('comp-limit-badge');
+        if (badge) badge.textContent = `Min ${cs.min} – Max ${cs.max}`;
+        if (!el('comp-min-likes').value) el('comp-min-likes').placeholder = cs.min;
       }
     } catch (err) {
       el('setup-status').textContent = 'Connection failed: ' + err.message;
@@ -818,6 +821,10 @@
         const s = state.services[sid];
         if (s) {
           el('comp-svc-info').textContent = `${s.name.slice(0, 24)} (min ${s.min}, max ${s.max}, rate ${s.rate})`;
+          const badge = el('comp-limit-badge');
+          if (badge) badge.textContent = `Min ${s.min} – Max ${s.max}`;
+          if (!el('comp-min-likes').value) el('comp-min-likes').placeholder = s.min;
+
           // Elevate drop qty to service minimum if currently lower (preventing likes below min)
           const curDropQ = parseInt(el('comp-drop-qty').value.trim()) || 0;
           if (curDropQ < s.min) {
@@ -831,6 +838,8 @@
         }
       }
       el('comp-svc-info').textContent = '';
+      const badge = el('comp-limit-badge');
+      if (badge) badge.textContent = '';
       updateAutoStats();
     });
 
@@ -963,11 +972,17 @@
       if (el('comp-enabled').checked && state.scheduleRuns.length) rePairCompanion(false);
     });
 
-    // Companion Total Qty & Qty/drop inputs
+    // Companion Total Qty, Qty/drop, Min & Max likes inputs
     el('comp-total-qty').addEventListener('input', () => {
       if (el('comp-enabled').checked && state.scheduleRuns.length) rePairCompanion(false);
     });
     el('comp-drop-qty').addEventListener('input', () => {
+      if (el('comp-enabled').checked && state.scheduleRuns.length) rePairCompanion(false);
+    });
+    el('comp-min-likes').addEventListener('input', () => {
+      if (el('comp-enabled').checked && state.scheduleRuns.length) rePairCompanion(false);
+    });
+    el('comp-max-likes').addEventListener('input', () => {
       if (el('comp-enabled').checked && state.scheduleRuns.length) rePairCompanion(false);
     });
 
@@ -1350,27 +1365,71 @@
       }
     }
 
-    // Truncate chosenIndices if compTotal cannot support that many runs at sMin
+    // 4. Min & Max likes per drop inputs
+    const minLikesTxt = el('comp-min-likes').value.trim();
+    const maxLikesTxt = el('comp-max-likes').value.trim();
+    let userMinLikes = minLikesTxt && /^\d+$/.test(minLikesTxt) ? parseInt(minLikesTxt) : null;
+    let userMaxLikes = maxLikesTxt && /^\d+$/.test(maxLikesTxt) ? parseInt(maxLikesTxt) : null;
+
+    // Check if comp-drop-qty has a range like "10-50"
+    if (userMinLikes === null && userMaxLikes === null && qtyTxt.includes('-')) {
+      const parts = qtyTxt.split('-').map(p => parseInt(p.trim())).filter(n => !isNaN(n));
+      if (parts.length === 2) {
+        userMinLikes = Math.min(parts[0], parts[1]);
+        userMaxLikes = Math.max(parts[0], parts[1]);
+      }
+    }
+
+    const effMinLikes = userMinLikes !== null ? Math.max(sMin, userMinLikes) : sMin;
+    const effMaxLikes = userMaxLikes !== null ? Math.min(sMax, Math.max(effMinLikes, userMaxLikes)) : sMax;
+
+    if (userMinLikes !== null && userMinLikes < sMin) {
+      if (showAlerts) alert(`Minimum likes per drop (${userMinLikes}) is below service minimum (${sMin}). Clamped to ${sMin}.`);
+      el('comp-min-likes').value = sMin;
+    }
+
+    // Truncate chosenIndices if compTotal cannot support that many runs at effMinLikes
     if (compTotal !== null) {
-      const maxPossibleDrops = Math.max(1, Math.floor(compTotal / sMin));
+      const maxPossibleDrops = Math.max(1, Math.floor(compTotal / effMinLikes));
       if (chosenIndices.length > maxPossibleDrops) {
         chosenIndices = chosenIndices.slice(0, maxPossibleDrops);
       }
     }
 
-    // 4. Calculate Quantities with Random Variance (lines 1463-1499)
+    // 5. Calculate Quantities with Random Variance or Min/Max Range
     const variancePct = parseInt(el('comp-var-slider').value) || 20;
     const k = chosenIndices.length;
     let quantities = [];
+    const hasMinMax = (userMinLikes !== null || userMaxLikes !== null);
 
     if (compTotal !== null) {
       if (k === 1) {
         quantities = [compTotal];
+      } else if (hasMinMax) {
+        // Distribute compTotal across runs respecting effMinLikes and effMaxLikes bounds
+        const rawWeights = chosenIndices.map(() => 1.0 - (variancePct / 100.0) + Math.random() * (2 * variancePct / 100.0));
+        const weightSum = rawWeights.reduce((a, b) => a + b, 0);
+        let rawQtys = rawWeights.map(w => Math.max(effMinLikes, Math.min(effMaxLikes, Math.round(compTotal * w / Math.max(1e-9, weightSum)))));
+        let diff = compTotal - rawQtys.reduce((a, b) => a + b, 0);
+        const step = diff > 0 ? 1 : -1;
+        let ptr = 0;
+        while (diff !== 0 && ptr < k * 20) {
+          const tgt = ptr % k;
+          if (step > 0 && rawQtys[tgt] < effMaxLikes) {
+            rawQtys[tgt] += 1;
+            diff -= 1;
+          } else if (step < 0 && rawQtys[tgt] > effMinLikes) {
+            rawQtys[tgt] -= 1;
+            diff += 1;
+          }
+          ptr++;
+        }
+        quantities = rawQtys;
       } else if (variancePct > 0) {
         const vFrac = variancePct / 100.0;
         const rawWeights = chosenIndices.map(() => 1.0 - vFrac + Math.random() * (2 * vFrac));
         const weightSum = rawWeights.reduce((a, b) => a + b, 0);
-        let rawQtys = rawWeights.map(w => Math.max(sMin, Math.round(compTotal * w / Math.max(1e-9, weightSum))));
+        let rawQtys = rawWeights.map(w => Math.max(sMin, Math.min(sMax, Math.round(compTotal * w / Math.max(1e-9, weightSum)))));
         let diff = compTotal - rawQtys.reduce((a, b) => a + b, 0);
         const step = diff > 0 ? 1 : -1;
         let ptr = 0;
@@ -1387,20 +1446,28 @@
         }
         quantities = rawQtys;
       } else {
-        const baseQ = Math.max(sMin, Math.floor(compTotal / k));
+        const baseQ = Math.max(effMinLikes, Math.floor(compTotal / k));
         const rem = compTotal - baseQ * k;
         quantities = chosenIndices.map((_, i) => baseQ + (i < rem ? 1 : 0));
       }
     } else {
-      quantities = chosenIndices.map(() => {
-        let q = baseQty;
-        if (variancePct > 0) {
-          const factor = 1.0 - (variancePct / 100) + Math.random() * (2 * variancePct / 100);
-          q = Math.round(baseQty * factor);
-        }
-        // Strict service minimum and maximum clamping
-        return Math.max(sMin, Math.min(q, sMax));
-      });
+      if (hasMinMax) {
+        // Randomize each like drop between effMinLikes and effMaxLikes
+        quantities = chosenIndices.map(() => {
+          if (effMaxLikes <= effMinLikes) return effMinLikes;
+          return Math.floor(effMinLikes + Math.random() * (effMaxLikes - effMinLikes + 1));
+        });
+      } else {
+        quantities = chosenIndices.map(() => {
+          let q = baseQty;
+          if (variancePct > 0) {
+            const factor = 1.0 - (variancePct / 100) + Math.random() * (2 * variancePct / 100);
+            q = Math.round(baseQty * factor);
+          }
+          // Strict service minimum and maximum clamping
+          return Math.max(sMin, Math.min(q, sMax));
+        });
+      }
     }
 
     state.companionLikes = {};
