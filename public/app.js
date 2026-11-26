@@ -456,7 +456,6 @@
 
     // Live background runner while the web app tab is open (exact desktop tick() parity)
     setInterval(() => {
-      if (!state.user) return;
       const scriptUrl = localStorage.getItem('anoxy_script_url') || '';
       const qs = scriptUrl ? `?script_url=${encodeURIComponent(scriptUrl)}` : '';
       fetch('/api/cron' + qs)
@@ -468,7 +467,13 @@
           }
         })
         .catch(() => {});
-    }, 15000);
+
+      // Auto-refresh the Plans table every 5s if user is currently viewing the Plans tab (desktop parity lines 2435-2438)
+      const plansTab = el('tab-plans');
+      if (plansTab && plansTab.classList.contains('active')) {
+        refreshPlans();
+      }
+    }, 5000);
   });
 
   // --- AUTH ---

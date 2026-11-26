@@ -112,9 +112,21 @@ async function dispatchDueSteps(targetScriptUrl) {
           isSuccess = true;
         } else if (pData.error) {
           errorMsg = pData.error;
+          const dupMatch = errorMsg.match(/order\s*#?(\d+)/i);
+          if (dupMatch) {
+            orderId = dupMatch[1];
+            isSuccess = true;
+            errorMsg = '';
+          }
         }
       } catch {
         errorMsg = panelResp.substring(0, 100);
+        const dupMatch = errorMsg.match(/order\s*#?(\d+)/i);
+        if (dupMatch) {
+          orderId = dupMatch[1];
+          isSuccess = true;
+          errorMsg = '';
+        }
       }
 
       // 3. Report result back to Google Sheet
