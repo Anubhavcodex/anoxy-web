@@ -116,10 +116,11 @@
                     <th style="width: 65px;">RATE</th>
                     <th style="width: 55px;">MIN</th>
                     <th style="width: 65px;">MAX</th>
+                    <th style="width: 140px; text-align: right;">ASSIGN</th>
                   </tr>
                 </thead>
                 <tbody id="order-tree-body">
-                  <tr><td colspan="6" style="text-align: center; padding: 40px; color: var(--muted);">Loading services...</td></tr>
+                  <tr><td colspan="7" style="text-align: center; padding: 40px; color: var(--muted);">Loading services...</td></tr>
                 </tbody>
               </table>
             </div>
@@ -458,15 +459,22 @@
               </table>
             </div>
 
-            <!-- BOTTOM ACTIONS (EXACT APPLICATION BAR) -->
-            <div style="margin-top: 8px; display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+            <!-- BOTTOM ACTIONS (EXACT APPLICATION BAR WITH TOTAL INR) -->
+            <div style="margin-top: 10px; display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap;">
               <div style="display: flex; gap: 6px;">
                 <button id="btn-auto-add" class="btn-small" style="padding: 6px 12px; font-weight: 600;">+ Add custom run</button>
                 <button id="btn-auto-regenerate" class="btn-small" style="padding: 6px 12px; font-weight: 600;">Regenerate</button>
               </div>
-              <button id="btn-auto-start" class="btn-accent" style="padding: 8px 24px; font-size: 13.5px;">
-                ⚡ Start plan (Run in 24/7 Cloud)
-              </button>
+              <div style="display: flex; align-items: center; gap: 14px;">
+                <div style="text-align: right; line-height: 1.25;">
+                  <div style="font-size: 10px; font-weight: 700; color: var(--muted); text-transform: uppercase;">Total Plan Cost</div>
+                  <div id="btn-start-cost" style="font-size: 13px; font-weight: 700; color: var(--text);">–</div>
+                  <div id="btn-start-inr" style="font-size: 13px; font-weight: 800; color: #10b981; cursor: pointer;" title="Estimated in INR. Click to change USD/INR rate."></div>
+                </div>
+                <button id="btn-auto-start" class="btn-accent" style="padding: 8px 24px; font-size: 13.5px;">
+                  ⚡ Start plan (Run in 24/7 Cloud)
+                </button>
+              </div>
             </div>
 
           </div>

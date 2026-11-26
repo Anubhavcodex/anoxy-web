@@ -631,6 +631,7 @@
         if (badge) badge.textContent = `Min ${cs.min} – Max ${cs.max}`;
         if (!el('comp-min-likes').value) el('comp-min-likes').placeholder = cs.min;
       }
+      updateAutoStats();
     } catch (err) {
       el('setup-status').textContent = 'Connection failed: ' + err.message;
       el('setup-status').style.color = 'var(--danger)';
@@ -662,30 +663,70 @@
       html += `
         <tr data-sid="${s.service}" class="service-row" style="cursor: pointer;">
           <td style="font-weight: 700;">${s.service}</td>
-          <td style="color: var(--muted); max-width: 130px; overflow: hidden; text-overflow: ellipsis;">${s.category}</td>
-          <td style="max-width: 280px; overflow: hidden; text-overflow: ellipsis;">${s.name}</td>
-          <td>${s.rate}</td>
+          <td style="color: var(--muted); max-width: 120px; overflow: hidden; text-overflow: ellipsis;">${s.category}</td>
+          <td style="max-width: 240px; overflow: hidden; text-overflow: ellipsis;">${s.name}</td>
+          <td style="font-weight: 600;">${s.rate}</td>
           <td>${s.min}</td>
           <td>${s.max}</td>
+          <td style="text-align: right; white-space: nowrap;">
+            <button class="btn-small btn-pick-views" data-sid="${s.service}" style="padding: 2px 7px; font-size: 10px; font-weight: 600; margin-right: 4px;">Use Views</button>
+            <button class="btn-small btn-pick-likes" data-sid="${s.service}" style="padding: 2px 7px; font-size: 10px; font-weight: 600; background: #eef2fe; color: var(--accent);">Use Likes</button>
+          </td>
         </tr>
       `;
     });
     tbody.innerHTML = html;
 
     tbody.querySelectorAll('.service-row').forEach(row => {
-      row.addEventListener('click', () => {
+      const sid = parseInt(row.dataset.sid);
+      const s = state.services[sid];
+      const info = s ? `min ${s.min}  max ${s.max}  rate ${s.rate} per 1000` : '';
+
+      const pickViews = () => {
         tbody.querySelectorAll('.service-row').forEach(r => r.classList.remove('selected'));
         row.classList.add('selected');
-        const sid = parseInt(row.dataset.sid);
-        const s = state.services[sid];
-        const info = s ? `min ${s.min}  max ${s.max}  rate ${s.rate} per 1000` : '';
-
-        // Two-way sync to both New Order and Auto Plan tabs (exact desktop parity line 2358)
         el('order-sid').value = sid;
         el('order-svc-info').textContent = info;
         el('auto-sid').value = sid;
         el('auto-svc-info').textContent = info;
         updateAutoStats();
+      };
+
+      const pickLikes = () => {
+        el('comp-sid').value = sid;
+        el('comp-svc-info').textContent = `${s.name.slice(0, 24)} (min ${s.min}, max ${s.max}, rate ${s.rate})`;
+        const badge = el('comp-limit-badge');
+        if (badge) badge.textContent = `Min ${s.min} – Max ${s.max}`;
+        if (!el('comp-min-likes').value) el('comp-min-likes').placeholder = s.min;
+
+        el('comp-enabled').checked = true;
+        el('comp-box').style.display = 'flex';
+
+        if (state.scheduleRuns.length) {
+          rePairCompanion(false);
+        }
+        updateAutoStats();
+        log(`Selected Service #${sid} (${s.name}) as 2nd Service (Likes).`);
+      };
+
+      const btnV = row.querySelector('.btn-pick-views');
+      if (btnV) {
+        btnV.addEventListener('click', e => {
+          e.stopPropagation();
+          pickViews();
+        });
+      }
+
+      const btnL = row.querySelector('.btn-pick-likes');
+      if (btnL) {
+        btnL.addEventListener('click', e => {
+          e.stopPropagation();
+          pickLikes();
+        });
+      }
+
+      row.addEventListener('click', () => {
+        pickViews();
       });
     });
   }
@@ -1010,6 +1051,17 @@
     el('btn-auto-generate').addEventListener('click', generateAutoSchedule);
     el('btn-auto-regenerate').addEventListener('click', generateAutoSchedule);
     el('btn-auto-start').addEventListener('click', startAutoPlan);
+    const inrEl = el('btn-start-inr');
+    if (inrEl) {
+      inrEl.addEventListener('click', () => {
+        const curRate = parseFloat(localStorage.getItem('anoxy_usd_inr_rate')) || 88.0;
+        const newRate = prompt('Enter USD to INR conversion rate (e.g. 88, 89):', curRate);
+        if (newRate && !isNaN(parseFloat(newRate)) && parseFloat(newRate) > 0) {
+          localStorage.setItem('anoxy_usd_inr_rate', parseFloat(newRate));
+          updateAutoStats();
+        }
+      });
+    }
     el('btn-auto-add').addEventListener('click', () => {
       // Set default minimums on add modal
       const compSid = parseInt(el('comp-sid').value.trim());
@@ -1545,6 +1597,8 @@
       el('stat-finish').textContent = '–';
       el('stat-total').textContent = '–';
       el('stat-cost').textContent = '–';
+      if (el('btn-start-cost')) el('btn-start-cost').textContent = '–';
+      if (el('btn-start-inr')) el('btn-start-inr').textContent = '';
       return;
     }
 
@@ -1558,21 +1612,64 @@
     el('stat-finish').textContent = fin.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' +
                                     fin.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-    const totalLikes = el('comp-enabled').checked ? Object.values(state.companionLikes).reduce((a, b) => a + b, 0) : 0;
-    el('stat-total').textContent = totalLikes > 0 ? `${totalViews} (+${totalLikes}♥)` : String(totalViews);
+    // Always count all companion likes attached to runs
+    const totalLikes = Object.values(state.companionLikes).reduce((a, b) => a + b, 0);
+    el('stat-total').textContent = totalLikes > 0 ? `${totalViews.toLocaleString()} (+${totalLikes.toLocaleString()}♥)` : totalViews.toLocaleString();
 
-    const sid = parseInt(el('auto-sid').value.trim());
-    const s = state.services[sid];
-    if (s) {
-      let cost = totalViews * s.rate / 1000;
-      if (el('comp-enabled').checked && totalLikes > 0) {
-        const compSid = parseInt(el('comp-sid').value.trim());
-        const compS = state.services[compSid];
-        if (compS) cost += totalLikes * compS.rate / 1000;
+    // Look up primary (views) service
+    const sidTxt = el('auto-sid').value.trim();
+    const sid = sidTxt && /^\d+$/.test(sidTxt) ? parseInt(sidTxt) : null;
+    const s = sid ? (state.services[sid] || state.services[sidTxt]) : null;
+
+    // Look up companion (likes) service
+    const compSidTxt = el('comp-sid').value.trim();
+    const compSid = compSidTxt && /^\d+$/.test(compSidTxt) ? parseInt(compSidTxt) : null;
+    const compS = compSid ? (state.services[compSid] || state.services[compSidTxt]) : null;
+
+    const viewsRate = (s && typeof s.rate === 'number' && !isNaN(s.rate)) ? s.rate : 0;
+    const likesRate = (compS && typeof compS.rate === 'number' && !isNaN(compS.rate)) ? compS.rate : 0;
+
+    const hasViewsCost = s && viewsRate > 0;
+    const hasLikesCost = compS && likesRate > 0 && totalLikes > 0;
+
+    const viewsCost = totalViews > 0 ? (totalViews * viewsRate / 1000) : 0;
+    const likesCost = totalLikes > 0 ? (totalLikes * likesRate / 1000) : 0;
+    const totalCost = viewsCost + likesCost;
+
+    const curr = (state.currency || 'USD').toUpperCase();
+    const usdToInrRate = parseFloat(localStorage.getItem('anoxy_usd_inr_rate')) || 88.0;
+
+    if (hasViewsCost || hasLikesCost) {
+      let costText = '';
+      let inrText = '';
+
+      if (curr === 'INR' || curr === '₹') {
+        costText = `₹ ${totalCost.toFixed(2)}`;
+        inrText = `Total: ₹ ${totalCost.toFixed(2)} INR`;
+        el('stat-cost').textContent = `₹ ${totalCost.toFixed(2)}`;
+      } else {
+        const inrEquivalent = totalCost * usdToInrRate;
+        costText = `${totalCost.toFixed(4)} ${curr}`;
+        inrText = `≈ ₹ ${inrEquivalent.toFixed(2)} INR`;
+        el('stat-cost').textContent = `${totalCost.toFixed(4)} ${curr} (₹${inrEquivalent.toFixed(2)})`;
       }
-      el('stat-cost').textContent = `${cost.toFixed(4)} ${state.currency}`;
+
+      const breakdown = `Views: ${viewsCost.toFixed(4)} ${curr} (${totalViews.toLocaleString()}) + Likes: ${likesCost.toFixed(4)} ${curr} (${totalLikes.toLocaleString()})`;
+      el('stat-cost').title = breakdown;
+
+      if (el('btn-start-cost')) {
+        el('btn-start-cost').textContent = costText;
+        el('btn-start-cost').title = breakdown;
+      }
+      if (el('btn-start-inr')) {
+        el('btn-start-inr').textContent = inrText;
+        el('btn-start-inr').title = `Calculated at 1 USD = ${usdToInrRate} INR. Click to change USD/INR rate.`;
+      }
     } else {
       el('stat-cost').textContent = '–';
+      el('stat-cost').title = '';
+      if (el('btn-start-cost')) el('btn-start-cost').textContent = '–';
+      if (el('btn-start-inr')) el('btn-start-inr').textContent = '';
     }
   }
 
@@ -1635,24 +1732,32 @@
 
     // Cost calculation & balance check (lines 2182-2186)
     const totalViews = state.scheduleRuns.reduce((a, [, q]) => a + q, 0);
-    let cost = s ? (totalViews * s.rate / 1000) : null;
-    const totalLikes = compOn ? Object.values(state.companionLikes).reduce((a, b) => a + b, 0) : 0;
-    if (cost !== null && compOn && totalLikes > 0) {
-      const compS = state.services[compSid];
-      if (compS) cost += totalLikes * compS.rate / 1000;
+    const viewsRate = (s && typeof s.rate === 'number' && !isNaN(s.rate)) ? s.rate : 0;
+    const viewsCost = totalViews > 0 ? (totalViews * viewsRate / 1000) : 0;
+
+    const totalLikes = Object.values(state.companionLikes).reduce((a, b) => a + b, 0);
+    const compS = compSid ? (state.services[compSid] || state.services[String(compSid)]) : null;
+    const likesRate = (compS && typeof compS.rate === 'number' && !isNaN(compS.rate)) ? compS.rate : 0;
+    const likesCost = (totalLikes > 0 && likesRate > 0) ? (totalLikes * likesRate / 1000) : 0;
+    const totalPlanCost = viewsCost + likesCost;
+
+    const curr = (state.currency || 'USD').toUpperCase();
+    const usdToInrRate = parseFloat(localStorage.getItem('anoxy_usd_inr_rate')) || 88.0;
+    const inrCost = curr === 'INR' ? totalPlanCost : (totalPlanCost * usdToInrRate);
+
+    if (totalPlanCost > 0 && state.balance !== null && totalPlanCost > state.balance) {
+      if (!confirm(`Estimated cost ${totalPlanCost.toFixed(4)} ${curr} is higher than your balance ${state.balance} ${curr}.\nLater runs may fail. Continue anyway?`)) return;
     }
 
-    if (cost !== null && state.balance !== null && cost > state.balance) {
-      if (!confirm(`Estimated cost ${cost.toFixed(4)} is higher than your balance ${state.balance}.\nLater runs may fail. Continue anyway?`)) return;
-    }
-
-    const compRunsCount = compOn ? Object.keys(state.companionLikes).length : 0;
+    const compRunsCount = totalLikes > 0 ? Object.keys(state.companionLikes).length : 0;
+    const inrDisplay = curr === 'INR' ? `₹ ${totalPlanCost.toFixed(2)} INR` : `${totalPlanCost.toFixed(4)} ${curr} (≈ ₹ ${inrCost.toFixed(2)} INR)`;
     const confirmMsg = `${state.scheduleRuns.length} primary runs` +
-      (compOn ? ` + ${compRunsCount} paired companion runs` : '') +
-      ` over this schedule.\n\nTotal views: ${totalViews}` +
-      (compOn ? ` + ${totalLikes} likes` : '') +
-      (cost !== null ? `\nEstimated cost: ${cost.toFixed(4)} ${state.currency}` : '') +
-      (state.balance !== null ? `\nBalance: ${state.balance} ${state.currency}` : '');
+      (totalLikes > 0 ? ` + ${compRunsCount} paired companion runs` : '') +
+      ` over this schedule.\n\nTotal views: ${totalViews.toLocaleString()}` +
+      (totalLikes > 0 ? ` + ${totalLikes.toLocaleString()} likes` : '') +
+      `\n\nTotal Estimated Cost: ${inrDisplay}` +
+      (totalLikes > 0 ? `\n(Views: ${viewsCost.toFixed(4)} + Likes: ${likesCost.toFixed(4)})` : '') +
+      (state.balance !== null ? `\nYour Balance: ${state.balance} ${curr}` : '');
 
     if (!confirm(confirmMsg)) return;
 
@@ -1966,10 +2071,12 @@
 
   // --- ROW ACTIONS: ADD LIKES BADGE (Exact desktop lines 1707-1734) ---
   window.anoxyAddLikes = function (i) {
-    const compSidTxt = el('comp-sid').value.trim();
+    let compSidTxt = el('comp-sid').value.trim();
     if (!compSidTxt || !/^\d+$/.test(compSidTxt)) {
-      alert("Please enter a numeric 2nd Service ID (Likes) first.");
-      return;
+      const promptSid = prompt("Enter 2nd Service ID (Likes):");
+      if (!promptSid || !/^\d+$/.test(promptSid.trim())) return;
+      compSidTxt = promptSid.trim();
+      el('comp-sid').value = compSidTxt;
     }
     const compSid = parseInt(compSidTxt);
     const compS = state.services[compSid];
@@ -1981,6 +2088,8 @@
     if (defQ > sMax) defQ = sMax;
 
     state.companionLikes[i] = defQ;
+    el('comp-enabled').checked = true;
+    el('comp-box').style.display = 'flex';
     log(`Added ${defQ} likes to Run #${i + 1}.`);
     renderAutoTable();
     updateAutoStats();
