@@ -421,11 +421,31 @@
     return parseDuration(pill || '24h');
   }
 
+  // Helper: auto-detect default Likes service from loaded services
+  function findDefaultLikesService() {
+    const list = Object.values(state.services || {});
+    if (!list.length) return null;
+    const match = list.find(s => {
+      const name = (s.name || '').toLowerCase();
+      const cat = (s.category || '').toLowerCase();
+      return (name.includes('like') || cat.includes('like')) && !name.includes('dislike');
+    });
+    return match || null;
+  }
+
   // ================================================================
   //  APP INITIALIZATION & EVENT LISTENERS
   // ================================================================
 
   document.addEventListener('DOMContentLoaded', () => {
+    try {
+      const cached = localStorage.getItem('anoxy_cached_services');
+      if (cached) {
+        state.services = JSON.parse(cached);
+        state.currency = localStorage.getItem('anoxy_cached_currency') || 'USD';
+        renderServicesTable();
+      }
+    } catch (e) {}
     initAuth();
     initTabs();
     initSetup();
@@ -615,13 +635,20 @@
       log(`Connected to panel. Loaded ${count} services. Balance: ${state.balance} ${state.currency}.`);
       renderServicesTable();
 
-      // Update info labels if SIDs are already entered
+      // Cache services for instant offline / startup retrieval
+      try {
+        localStorage.setItem('anoxy_cached_services', JSON.stringify(state.services));
+        localStorage.setItem('anoxy_cached_currency', state.currency || 'USD');
+      } catch (e) {}
+
+      // Update info labels and rates if SIDs are already entered
       const sid = parseInt(el('auto-sid').value.trim());
       if (sid && state.services[sid]) {
         const s = state.services[sid];
         const info = `min ${s.min}  max ${s.max}  rate ${s.rate} per 1000`;
         el('auto-svc-info').textContent = info;
         el('order-svc-info').textContent = info;
+        if (el('auto-rate') && !el('auto-rate').value) el('auto-rate').value = s.rate;
       }
       const compSid = parseInt(el('comp-sid').value.trim());
       if (compSid && state.services[compSid]) {
@@ -630,6 +657,7 @@
         const badge = el('comp-limit-badge');
         if (badge) badge.textContent = `Min ${cs.min} – Max ${cs.max}`;
         if (!el('comp-min-likes').value) el('comp-min-likes').placeholder = cs.min;
+        if (el('comp-rate') && !el('comp-rate').value) el('comp-rate').value = cs.rate;
       }
       updateAutoStats();
     } catch (err) {
@@ -689,12 +717,14 @@
         el('order-svc-info').textContent = info;
         el('auto-sid').value = sid;
         el('auto-svc-info').textContent = info;
+        if (el('auto-rate')) el('auto-rate').value = s.rate;
         updateAutoStats();
       };
 
       const pickLikes = () => {
         el('comp-sid').value = sid;
         el('comp-svc-info').textContent = `${s.name.slice(0, 24)} (min ${s.min}, max ${s.max}, rate ${s.rate})`;
+        if (el('comp-rate')) el('comp-rate').value = s.rate;
         const badge = el('comp-limit-badge');
         if (badge) badge.textContent = `Min ${s.min} – Max ${s.max}`;
         if (!el('comp-min-likes').value) el('comp-min-likes').placeholder = s.min;
@@ -704,8 +734,9 @@
 
         if (state.scheduleRuns.length) {
           rePairCompanion(false);
+        } else {
+          updateAutoStats();
         }
-        updateAutoStats();
         log(`Selected Service #${sid} (${s.name}) as 2nd Service (Likes).`);
       };
 
@@ -843,12 +874,21 @@
       const val = el('auto-sid').value.trim();
       el('order-sid').value = val;
       const sid = parseInt(val);
-      const s = state.services[sid];
+      const s = state.services[sid] || state.services[val];
       const info = s ? `min ${s.min}  max ${s.max}  rate ${s.rate} per 1000` : '';
       el('auto-svc-info').textContent = info;
       el('order-svc-info').textContent = info;
+      if (s && el('auto-rate')) el('auto-rate').value = s.rate;
       updateAutoStats();
     });
+
+    if (el('auto-rate')) {
+      el('auto-rate').addEventListener('input', () => updateAutoStats());
+    }
+
+    if (el('comp-rate')) {
+      el('comp-rate').addEventListener('input', () => updateAutoStats());
+    }
 
     el('auto-link').addEventListener('input', () => {
       el('order-link').value = el('auto-link').value;
@@ -859,12 +899,13 @@
       const sidTxt = el('comp-sid').value.trim();
       if (/^\d+$/.test(sidTxt)) {
         const sid = parseInt(sidTxt);
-        const s = state.services[sid];
+        const s = state.services[sid] || state.services[sidTxt];
         if (s) {
           el('comp-svc-info').textContent = `${s.name.slice(0, 24)} (min ${s.min}, max ${s.max}, rate ${s.rate})`;
           const badge = el('comp-limit-badge');
           if (badge) badge.textContent = `Min ${s.min} – Max ${s.max}`;
           if (!el('comp-min-likes').value) el('comp-min-likes').placeholder = s.min;
+          if (el('comp-rate')) el('comp-rate').value = s.rate;
 
           // Elevate drop qty to service minimum if currently lower (preventing likes below min)
           const curDropQ = parseInt(el('comp-drop-qty').value.trim()) || 0;
@@ -881,6 +922,9 @@
       el('comp-svc-info').textContent = '';
       const badge = el('comp-limit-badge');
       if (badge) badge.textContent = '';
+      if (el('comp-enabled').checked && state.scheduleRuns.length) {
+        rePairCompanion(false);
+      }
       updateAutoStats();
     });
 
@@ -940,9 +984,27 @@
 
     // Companion Toggle Checkbox
     el('comp-enabled').addEventListener('change', e => {
-      el('comp-box').style.display = e.target.checked ? 'flex' : 'none';
-      if (e.target.checked && state.scheduleRuns.length) {
-        rePairCompanion(false);
+      const isChecked = e.target.checked;
+      el('comp-box').style.display = isChecked ? 'flex' : 'none';
+      if (isChecked) {
+        let compSidVal = el('comp-sid').value.trim();
+        if (!compSidVal) {
+          const defLikes = findDefaultLikesService();
+          if (defLikes) {
+            el('comp-sid').value = defLikes.service;
+            el('comp-svc-info').textContent = `${defLikes.name.slice(0, 24)} (min ${defLikes.min}, max ${defLikes.max}, rate ${defLikes.rate})`;
+            if (el('comp-rate')) el('comp-rate').value = defLikes.rate;
+            const badge = el('comp-limit-badge');
+            if (badge) badge.textContent = `Min ${defLikes.min} – Max ${defLikes.max}`;
+            const curDropQ = parseInt(el('comp-drop-qty').value.trim()) || 0;
+            if (curDropQ < defLikes.min) el('comp-drop-qty').value = defLikes.min;
+          }
+        }
+        if (state.scheduleRuns.length) {
+          rePairCompanion(false);
+        } else {
+          updateAutoStats();
+        }
       } else {
         state.companionLikes = {};
         renderAutoTable();
@@ -1304,13 +1366,27 @@
       return;
     }
 
-    const compSidTxt = el('comp-sid').value.trim();
+    let compSidTxt = el('comp-sid').value.trim();
     if (!compSidTxt || !/^\d+$/.test(compSidTxt)) {
-      if (showAlerts) alert("Enter a numeric Service ID for the 2nd service (e.g. Likes).");
+      const defSvc = findDefaultLikesService();
+      if (defSvc) {
+        compSidTxt = String(defSvc.service);
+        el('comp-sid').value = compSidTxt;
+        if (el('comp-svc-info')) el('comp-svc-info').textContent = `${defSvc.name.slice(0, 24)} (min ${defSvc.min}, max ${defSvc.max}, rate ${defSvc.rate})`;
+        if (el('comp-rate') && !el('comp-rate').value) el('comp-rate').value = defSvc.rate;
+        const badge = el('comp-limit-badge');
+        if (badge) badge.textContent = `Min ${defSvc.min} – Max ${defSvc.max}`;
+        if (!el('comp-min-likes').value) el('comp-min-likes').placeholder = defSvc.min;
+      }
+    }
+
+    if (!compSidTxt && showAlerts) {
+      alert("Enter a numeric Service ID for the 2nd service (e.g. Likes).");
       return;
     }
-    const csid = parseInt(compSidTxt);
-    const compS = state.services[csid];
+
+    const csid = compSidTxt && /^\d+$/.test(compSidTxt) ? parseInt(compSidTxt) : null;
+    const compS = csid ? (state.services[csid] || state.services[compSidTxt]) : null;
     // Strict service minimum floor: defaults to at least 10 if not yet loaded from panel
     const sMin = (compS && compS.min) ? compS.min : 10;
     const sMax = (compS && compS.max) ? compS.max : 1e9;
@@ -1616,30 +1692,48 @@
     const totalLikes = Object.values(state.companionLikes).reduce((a, b) => a + b, 0);
     el('stat-total').textContent = totalLikes > 0 ? `${totalViews.toLocaleString()} (+${totalLikes.toLocaleString()}♥)` : totalViews.toLocaleString();
 
-    // Look up primary (views) service
+    // Look up primary (views) service & rate
     const sidTxt = el('auto-sid').value.trim();
     const sid = sidTxt && /^\d+$/.test(sidTxt) ? parseInt(sidTxt) : null;
     const s = sid ? (state.services[sid] || state.services[sidTxt]) : null;
 
-    // Look up companion (likes) service
+    let viewsRate = 0;
+    const manualViewsRate = parseFloat(el('auto-rate')?.value);
+    if (!isNaN(manualViewsRate) && manualViewsRate > 0) {
+      viewsRate = manualViewsRate;
+    } else if (s && s.rate !== undefined && s.rate !== null) {
+      const parsed = parseFloat(s.rate);
+      if (!isNaN(parsed) && parsed > 0) {
+        viewsRate = parsed;
+        if (el('auto-rate') && !el('auto-rate').value) el('auto-rate').value = parsed;
+      }
+    }
+
+    // Look up companion (likes) service & rate
     const compSidTxt = el('comp-sid').value.trim();
     const compSid = compSidTxt && /^\d+$/.test(compSidTxt) ? parseInt(compSidTxt) : null;
     const compS = compSid ? (state.services[compSid] || state.services[compSidTxt]) : null;
 
-    const viewsRate = (s && typeof s.rate === 'number' && !isNaN(s.rate)) ? s.rate : 0;
-    const likesRate = (compS && typeof compS.rate === 'number' && !isNaN(compS.rate)) ? compS.rate : 0;
+    let likesRate = 0;
+    const manualLikesRate = parseFloat(el('comp-rate')?.value);
+    if (!isNaN(manualLikesRate) && manualLikesRate > 0) {
+      likesRate = manualLikesRate;
+    } else if (compS && compS.rate !== undefined && compS.rate !== null) {
+      const parsed = parseFloat(compS.rate);
+      if (!isNaN(parsed) && parsed > 0) {
+        likesRate = parsed;
+        if (el('comp-rate') && !el('comp-rate').value) el('comp-rate').value = parsed;
+      }
+    }
 
-    const hasViewsCost = s && viewsRate > 0;
-    const hasLikesCost = compS && likesRate > 0 && totalLikes > 0;
-
-    const viewsCost = totalViews > 0 ? (totalViews * viewsRate / 1000) : 0;
-    const likesCost = totalLikes > 0 ? (totalLikes * likesRate / 1000) : 0;
+    const viewsCost = (totalViews > 0 && viewsRate > 0) ? (totalViews * viewsRate / 1000) : 0;
+    const likesCost = (totalLikes > 0 && likesRate > 0) ? (totalLikes * likesRate / 1000) : 0;
     const totalCost = viewsCost + likesCost;
 
     const curr = (state.currency || 'USD').toUpperCase();
     const usdToInrRate = parseFloat(localStorage.getItem('anoxy_usd_inr_rate')) || 88.0;
 
-    if (hasViewsCost || hasLikesCost) {
+    if (viewsCost > 0 || likesCost > 0) {
       let costText = '';
       let inrText = '';
 
@@ -1732,12 +1826,26 @@
 
     // Cost calculation & balance check (lines 2182-2186)
     const totalViews = state.scheduleRuns.reduce((a, [, q]) => a + q, 0);
-    const viewsRate = (s && typeof s.rate === 'number' && !isNaN(s.rate)) ? s.rate : 0;
+    let viewsRate = 0;
+    const manualViewsRate = parseFloat(el('auto-rate')?.value);
+    if (!isNaN(manualViewsRate) && manualViewsRate > 0) {
+      viewsRate = manualViewsRate;
+    } else if (s && s.rate !== undefined && s.rate !== null) {
+      const parsed = parseFloat(s.rate);
+      if (!isNaN(parsed) && parsed > 0) viewsRate = parsed;
+    }
     const viewsCost = totalViews > 0 ? (totalViews * viewsRate / 1000) : 0;
 
     const totalLikes = Object.values(state.companionLikes).reduce((a, b) => a + b, 0);
     const compS = compSid ? (state.services[compSid] || state.services[String(compSid)]) : null;
-    const likesRate = (compS && typeof compS.rate === 'number' && !isNaN(compS.rate)) ? compS.rate : 0;
+    let likesRate = 0;
+    const manualLikesRate = parseFloat(el('comp-rate')?.value);
+    if (!isNaN(manualLikesRate) && manualLikesRate > 0) {
+      likesRate = manualLikesRate;
+    } else if (compS && compS.rate !== undefined && compS.rate !== null) {
+      const parsed = parseFloat(compS.rate);
+      if (!isNaN(parsed) && parsed > 0) likesRate = parsed;
+    }
     const likesCost = (totalLikes > 0 && likesRate > 0) ? (totalLikes * likesRate / 1000) : 0;
     const totalPlanCost = viewsCost + likesCost;
 
@@ -2073,10 +2181,21 @@
   window.anoxyAddLikes = function (i) {
     let compSidTxt = el('comp-sid').value.trim();
     if (!compSidTxt || !/^\d+$/.test(compSidTxt)) {
-      const promptSid = prompt("Enter 2nd Service ID (Likes):");
-      if (!promptSid || !/^\d+$/.test(promptSid.trim())) return;
-      compSidTxt = promptSid.trim();
-      el('comp-sid').value = compSidTxt;
+      const defLikes = findDefaultLikesService();
+      if (defLikes) {
+        compSidTxt = String(defLikes.service);
+        el('comp-sid').value = compSidTxt;
+        el('comp-svc-info').textContent = `${defLikes.name.slice(0, 24)} (min ${defLikes.min}, max ${defLikes.max}, rate ${defLikes.rate})`;
+        if (el('comp-rate')) el('comp-rate').value = defLikes.rate;
+        const badge = el('comp-limit-badge');
+        if (badge) badge.textContent = `Min ${defLikes.min} – Max ${defLikes.max}`;
+        if (!el('comp-min-likes').value) el('comp-min-likes').placeholder = defLikes.min;
+      } else {
+        const promptSid = prompt("Enter 2nd Service ID (Likes):");
+        if (!promptSid || !/^\d+$/.test(promptSid.trim())) return;
+        compSidTxt = promptSid.trim();
+        el('comp-sid').value = compSidTxt;
+      }
     }
     const compSid = parseInt(compSidTxt);
     const compS = state.services[compSid];
