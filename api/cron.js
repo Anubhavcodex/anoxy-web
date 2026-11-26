@@ -129,13 +129,22 @@ async function dispatchDueSteps(targetScriptUrl) {
         }
       }
 
+      let newStatus = isSuccess ? 'sent' : 'failed';
+      let nextRunAt = null;
+
+      if (!isSuccess && errorMsg && (errorMsg.toLowerCase().includes('wait') || errorMsg.toLowerCase().includes('in progress') || errorMsg.toLowerCase().includes('duplicate'))) {
+        newStatus = 'pending';
+        nextRunAt = Date.now() + 120000; // Postpone 2m and retry automatically when provider finishes previous order
+      }
+
       // 3. Report result back to Google Sheet
       await postRequest(scriptUrl, {
         action: 'update_step',
         step_id: step_id,
-        status: isSuccess ? 'sent' : 'failed',
+        status: newStatus,
         order_id: orderId || '',
-        error: errorMsg || ''
+        error: errorMsg || '',
+        ...(nextRunAt ? { run_at: nextRunAt } : {})
       }, true);
 
       results.push({ step_id, success: isSuccess, order: orderId, error: errorMsg });
