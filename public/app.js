@@ -529,11 +529,15 @@
     });
 
     el('btn-save-connect').addEventListener('click', () => {
-      const url = el('setup-url').value.trim();
+      let url = el('setup-url').value.trim();
       const key = el('setup-key').value.trim();
       if (!url || !key) {
         alert('Enter the API URL and API key.');
         return;
+      }
+      if (!/^https?:\/\//i.test(url)) {
+        url = 'https://' + url;
+        el('setup-url').value = url;
       }
       localStorage.setItem('anoxy_panel_url', url);
       localStorage.setItem('anoxy_panel_key', key);
@@ -542,9 +546,14 @@
   }
 
   function autoConnectPanel() {
-    const url = localStorage.getItem('anoxy_panel_url');
-    const key = localStorage.getItem('anoxy_panel_key');
-    if (url && key) connectPanel(url, key);
+    let url = (localStorage.getItem('anoxy_panel_url') || '').trim();
+    const key = (localStorage.getItem('anoxy_panel_key') || '').trim();
+    if (url && key) {
+      if (!/^https?:\/\//i.test(url)) {
+        url = 'https://' + url;
+      }
+      connectPanel(url, key);
+    }
   }
 
   async function connectPanel(url, key) {
@@ -559,62 +568,68 @@
         fetch('/api/panel', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'balance', api_url: url, api_key: key })
+          body: JSON.stringify({ action: 'balance', api_url: url, apiUrl: url, api_key: key, apiKey: key })
         }),
         fetch('/api/panel', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'services', api_url: url, api_key: key })
+          body: JSON.stringify({ action: 'services', api_url: url, apiUrl: url, api_key: key, apiKey: key })
         })
       ]);
 
       const balData = await balRes.json();
       const svcData = await svcRes.json();
 
-      if (balData.error) throw new Error('Balance API: ' + balData.error);
-      if (svcData.error) throw new Error('Services API: ' + svcData.error);
+      if (balData && balData.error) {
+        throw new Error(balData.error);
+      }
+      if (svcData && svcData.error) {
+        throw new Error(svcData.error);
+      }
 
-      state.balance = parseFloat(balData.balance);
+      state.balance = isNaN(parseFloat(balData.balance)) ? 0 : parseFloat(balData.balance);
       state.currency = balData.currency || 'USD';
 
-      if (Array.isArray(svcData)) {
-        state.services = {};
-        svcData.forEach(s => {
-          const sid = parseInt(s.service);
-          state.services[sid] = {
-            service: sid,
-            name: s.name,
-            rate: parseFloat(s.rate),
-            min: parseInt(s.min) || 1,
-            max: parseInt(s.max) || 1e9,
-            category: s.category || ''
-          };
-        });
-        const count = Object.keys(state.services).length;
-        el('setup-status').textContent = `Connected (${count} services, balance: ${state.balance} ${state.currency})`;
-        el('setup-status').style.color = 'var(--success)';
-        el('conn-dot').style.color = 'var(--success)';
-        el('topbar-title').textContent = 'Connected';
-        el('topbar-sub').textContent = `${count} services · balance ${state.balance} ${state.currency}`;
-        log(`Connected to panel. Loaded ${count} services. Balance: ${state.balance} ${state.currency}.`);
-        renderServicesTable();
+      if (!Array.isArray(svcData)) {
+        throw new Error('Panel returned invalid services format (expected array)');
+      }
 
-        // Update info labels if SIDs are already entered
-        const sid = parseInt(el('auto-sid').value.trim());
-        if (sid && state.services[sid]) {
-          const s = state.services[sid];
-          const info = `min ${s.min}  max ${s.max}  rate ${s.rate} per 1000`;
-          el('auto-svc-info').textContent = info;
-          el('order-svc-info').textContent = info;
-        }
-        const compSid = parseInt(el('comp-sid').value.trim());
-        if (compSid && state.services[compSid]) {
-          const cs = state.services[compSid];
-          el('comp-svc-info').textContent = `${cs.name.slice(0, 24)} (min ${cs.min}, max ${cs.max}, rate ${cs.rate})`;
-        }
+      state.services = {};
+      svcData.forEach(s => {
+        const sid = parseInt(s.service);
+        state.services[sid] = {
+          service: sid,
+          name: s.name,
+          rate: parseFloat(s.rate) || 0,
+          min: parseInt(s.min) || 1,
+          max: parseInt(s.max) || 1e9,
+          category: s.category || ''
+        };
+      });
+      const count = Object.keys(state.services).length;
+      el('setup-status').textContent = `Connected (${count} services, balance: ${state.balance} ${state.currency})`;
+      el('setup-status').style.color = 'var(--success)';
+      el('conn-dot').style.color = 'var(--success)';
+      el('topbar-title').textContent = 'Connected';
+      el('topbar-sub').textContent = `${count} services · balance ${state.balance} ${state.currency}`;
+      log(`Connected to panel. Loaded ${count} services. Balance: ${state.balance} ${state.currency}.`);
+      renderServicesTable();
+
+      // Update info labels if SIDs are already entered
+      const sid = parseInt(el('auto-sid').value.trim());
+      if (sid && state.services[sid]) {
+        const s = state.services[sid];
+        const info = `min ${s.min}  max ${s.max}  rate ${s.rate} per 1000`;
+        el('auto-svc-info').textContent = info;
+        el('order-svc-info').textContent = info;
+      }
+      const compSid = parseInt(el('comp-sid').value.trim());
+      if (compSid && state.services[compSid]) {
+        const cs = state.services[compSid];
+        el('comp-svc-info').textContent = `${cs.name.slice(0, 24)} (min ${cs.min}, max ${cs.max}, rate ${cs.rate})`;
       }
     } catch (err) {
-      el('setup-status').textContent = 'Connection failed';
+      el('setup-status').textContent = 'Connection failed: ' + err.message;
       el('setup-status').style.color = 'var(--danger)';
       el('conn-dot').style.color = 'var(--danger)';
       el('topbar-title').textContent = 'Connection failed';

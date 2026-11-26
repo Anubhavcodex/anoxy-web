@@ -1,41 +1,66 @@
 // api/cron.js - 24/7 Background Scheduler executed via cron-job.org or Vercel Cron
 const https = require('https');
 const http = require('http');
+const { URL } = require('url');
 
 const DEFAULT_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyq43d3TxNxQ8bdG_Ih_n0K0gfhQNkW6oTQ6uSo_FxsQCkUh3_m4xHQ5Z_xZsJWAxEv/exec';
 
-function postRequest(url, data, isJson = true) {
+function postRequest(url, data, isJson = true, redirectCount = 0) {
   return new Promise((resolve, reject) => {
-    const u = new URL(url);
-    const client = u.protocol === 'https:' ? https : http;
+    if (redirectCount > 5) {
+      return reject(new Error('Too many redirects'));
+    }
+
+    let u;
+    try {
+      let target = (url || '').trim();
+      if (!/^https?:\/\//i.test(target)) target = 'https://' + target;
+      u = new URL(target);
+    } catch (e) {
+      return reject(new Error('Invalid URL: ' + url));
+    }
+
+    const isHttps = u.protocol === 'https:';
+    const client = isHttps ? https : http;
     const body = isJson ? JSON.stringify(data) : data.toString();
 
     const headers = {
       'Content-Type': isJson ? 'application/json' : 'application/x-www-form-urlencoded',
       'Content-Length': Buffer.byteLength(body),
-      'User-Agent': 'AnoxyCron/1.0'
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
     };
 
     const req = client.request({
+      protocol: u.protocol,
       hostname: u.hostname,
-      port: u.port || (u.protocol === 'https:' ? 443 : 80),
+      port: u.port || (isHttps ? 443 : 80),
       path: u.pathname + u.search,
       method: 'POST',
       headers: headers,
-      timeout: 10000
+      agent: isHttps ? new https.Agent({ rejectUnauthorized: false, keepAlive: true }) : undefined,
+      timeout: 25000
     }, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        https.get(res.headers.location, (redir) => {
-          let out = '';
-          redir.on('data', d => out += d);
-          redir.on('end', () => resolve(out));
-        }).on('error', reject);
-        return;
+        const nextUrl = new URL(res.headers.location, u.href).toString();
+        res.resume();
+        // If Google Apps Script redirects with 302, it redirects to a GET endpoint
+        if (isJson && (res.statusCode === 301 || res.statusCode === 302)) {
+          https.get(nextUrl, (redir) => {
+            let out = '';
+            redir.on('data', d => out += d);
+            redir.on('end', () => resolve(out));
+          }).on('error', reject);
+          return;
+        }
+        return resolve(postRequest(nextUrl, data, isJson, redirectCount + 1));
       }
+
       let out = '';
+      res.setEncoding('utf8');
       res.on('data', d => out += d);
       res.on('end', () => resolve(out));
     });
+
     req.on('error', reject);
     req.on('timeout', () => { req.destroy(); reject(new Error('Timeout')); });
     req.write(body);
