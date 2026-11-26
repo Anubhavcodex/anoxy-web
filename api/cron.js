@@ -71,7 +71,9 @@ function postRequest(url, data, isJson = true, redirectCount = 0) {
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   const now = Date.now();
-  const scriptUrl = process.env.GOOGLE_SCRIPT_URL || DEFAULT_SCRIPT_URL;
+  const scriptUrl = (req.query && (req.query.script_url || req.query.scriptUrl)) ||
+                    process.env.GOOGLE_SCRIPT_URL ||
+                    DEFAULT_SCRIPT_URL;
 
   try {
     // 1. Ask Google Apps Script for due steps (status == 'pending' AND run_at <= now)

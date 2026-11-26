@@ -541,8 +541,10 @@
   function initSetup() {
     const savedUrl = localStorage.getItem('anoxy_panel_url');
     const savedKey = localStorage.getItem('anoxy_panel_key');
+    const savedScript = localStorage.getItem('anoxy_script_url');
     if (savedUrl) el('setup-url').value = savedUrl;
     if (savedKey) el('setup-key').value = savedKey;
+    if (savedScript && el('setup-script-url')) el('setup-script-url').value = savedScript;
 
     el('setup-show-key').addEventListener('change', e => {
       el('setup-key').type = e.target.checked ? 'text' : 'password';
@@ -561,6 +563,11 @@
       }
       localStorage.setItem('anoxy_panel_url', url);
       localStorage.setItem('anoxy_panel_key', key);
+      if (el('setup-script-url')) {
+        const sUrl = el('setup-script-url').value.trim();
+        if (sUrl) localStorage.setItem('anoxy_script_url', sUrl);
+        else localStorage.removeItem('anoxy_script_url');
+      }
       connectPanel(url, key);
     });
   }
@@ -1903,6 +1910,7 @@
   async function savePlanToCloud(name, sid, link, steps) {
     const url = localStorage.getItem('anoxy_panel_url');
     const key = localStorage.getItem('anoxy_panel_key');
+    const scriptUrl = localStorage.getItem('anoxy_script_url') || '';
 
     if (!url || !key) {
       alert('Please configure Panel API credentials in Setup first.');
@@ -1920,6 +1928,7 @@
           link: link,
           api_url: url,
           api_key: key,
+          script_url: scriptUrl,
           steps: steps
         })
       });
@@ -1928,8 +1937,10 @@
         log(`Plan started with ${steps.length} scheduled step(s) in 24/7 Cloud.`);
         alert('Plan started successfully in 24/7 Cloud!\n\nYou can now turn off your PC. Cloud will execute all drops automatically.');
         switchTab('plans');
+      } else if (data.message && data.message.includes('Missing username or password')) {
+        alert("Google Sheet Apps Script Update Required:\n\nYour Google Sheet currently has the old login-only script.\n\nTo enable 24/7 Cloud Plans:\n1. Open your Google Sheet → Extensions → Apps Script\n2. Replace all code by pasting 'google_apps_script.js'\n3. Click Deploy → Manage deployments → Edit (pencil icon)\n4. Select Version: 'New version' and click Deploy.");
       } else {
-        alert('Plan response: ' + JSON.stringify(data));
+        alert('Plan response: ' + (data.message || JSON.stringify(data)));
       }
     } catch (err) {
       alert('Error dispatching plan to cloud: ' + err.message);
@@ -2428,7 +2439,9 @@
 
   async function refreshPlans() {
     try {
-      const res = await fetch('/api/plans');
+      const scriptUrl = localStorage.getItem('anoxy_script_url') || '';
+      const qs = scriptUrl ? `?script_url=${encodeURIComponent(scriptUrl)}` : '';
+      const res = await fetch('/api/plans' + qs);
       const data = await res.json();
       state.plans = data.plans || [];
       state.steps = data.steps || [];

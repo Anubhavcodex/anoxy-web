@@ -41,7 +41,10 @@ module.exports = async (req, res) => {
 
   if (req.method === 'OPTIONS') return res.status(200).end();
 
-  const scriptUrl = process.env.GOOGLE_SCRIPT_URL || DEFAULT_SCRIPT_URL;
+  const scriptUrl = (req.body && (req.body.script_url || req.body.scriptUrl)) ||
+                    (req.query && (req.query.script_url || req.query.scriptUrl)) ||
+                    process.env.GOOGLE_SCRIPT_URL ||
+                    DEFAULT_SCRIPT_URL;
 
   try {
     if (req.method === 'POST') {
