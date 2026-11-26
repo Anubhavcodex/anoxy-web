@@ -6,6 +6,9 @@
 (function () {
   'use strict';
 
+  // --- CONSTANTS (Matching desktop anoxy_schedular.py lines 266-270) ---
+  const UNITS = { s: 1 / 60, m: 1, h: 60, d: 1440 };
+
   // --- STATE ---
   const state = {
     user: null,
@@ -32,13 +35,17 @@
   }
 
   // ================================================================
-  //  PARSERS & FORMATTERS (Exact Python desktop parity)
+  //  PARSERS & FORMATTERS (Exact Python desktop parity lines 272-343)
   // ================================================================
 
+  /**
+   * parseDuration: Parses duration tokens like '1h', '30m', '1h30m', '90s', '1d2h'.
+   * Matches desktop parse_duration (line 272).
+   */
   function parseDuration(text) {
     if (!text) throw new Error("Duration cannot be empty");
     const s = String(text).trim().toLowerCase();
-    const tokenRe = /(\d+(?:\.\d+)?)\s*([smhd]?)/g;
+    const tokenRe = /(\d+(?:\.\d+)?)\s*([smhd])/g;
     let total = 0.0, matchedAny = false, lastIndex = 0, m;
 
     while ((m = tokenRe.exec(s)) !== null) {
@@ -49,20 +56,24 @@
       matchedAny = true;
       lastIndex = tokenRe.lastIndex;
       const val = parseFloat(m[1]);
-      const unit = m[2] || 'm';
-      if (unit === 's') total += val / 60.0;
-      else if (unit === 'm' || unit === '') total += val;
-      else if (unit === 'h') total += val * 60.0;
-      else if (unit === 'd') total += val * 1440.0;
-      else throw new Error(`Unknown time unit: '${unit}'`);
+      const unit = m[2];
+      total += val * UNITS[unit];
     }
 
     if (!matchedAny || lastIndex < s.length) {
-      throw new Error(`Invalid duration: '${text}'`);
+      // Fallback for pure numbers (default unit: minutes)
+      if (/^\d+(?:\.\d+)?$/.test(s)) {
+        return parseFloat(s);
+      }
+      throw new Error(`Invalid duration: '${text}'. Use formats like 30m, 1h, 1h30m, 2d.`);
     }
     return Math.max(0, Math.round(total * 100) / 100);
   }
 
+  /**
+   * parseGap: '30m' -> 30.0 ; '1h30m' -> 90.0 ; '20m-45m' -> random between them.
+   * Matches desktop parse_gap (line 276).
+   */
   function parseGap(tok) {
     const t = String(tok).trim().toLowerCase();
     if (t.includes('-')) {
@@ -71,292 +82,314 @@
       const lo = parseDuration(parts[0]);
       const hi = parseDuration(parts[1]);
       if (lo > hi) throw new Error(`Gap range low > high in '${tok}'`);
-      return [lo, hi];
+      return lo + Math.random() * (hi - lo);
     }
-    const d = parseDuration(t);
-    return [d, d];
+    return parseDuration(t);
   }
 
-  function fmtGap(mins) {
-    const m = Math.round(mins);
-    if (m === 0) return '0m';
-    const d = Math.floor(m / 1440);
-    const rem = m % 1440;
-    const h = Math.floor(rem / 60);
-    const min = rem % 60;
-    const out = [];
-    if (d) out.push(`${d}d`);
-    if (h) out.push(`${h}h`);
-    if (min) out.push(`${min}m`);
-    return out.join(' ') || '0m';
-  }
-
-  function gapToken(mins) {
-    const m = Math.round(mins);
-    if (m === 0) return '0m';
-    if (m % 1440 === 0) return `${m / 1440}d`;
-    if (m % 60 === 0) return `${m / 60}h`;
-    return `${m}m`;
-  }
-
+  /**
+   * parseCycle: A repeating pattern for Auto plan. Each item is [quantity, gap_after]
+   * where gap_after is [lo, hi] range in minutes, or null (default gap filled in later).
+   * Matches desktop parse_cycle (lines 315-343).
+   */
   function parseCycle(text) {
-    const toks = String(text).trim().split(/\s+/).filter(Boolean);
-    if (!toks.length) throw new Error("Pattern cannot be empty.");
-    const cycle = [];
+    const tokens = String(text).toLowerCase().replace(/,/g, ' ').trim().split(/\s+/).filter(Boolean);
+    const items = [];
     let i = 0;
-    while (i < toks.length) {
-      const qtok = toks[i];
+    const n = tokens.length;
+
+    while (i < n) {
+      const qtok = tokens[i];
       const q = parseInt(qtok, 10);
-      if (isNaN(q) || q <= 0 || String(q) !== qtok) {
-        throw new Error(`Expected whole quantity at token ${i + 1}, got '${qtok}'.`);
+      if (isNaN(q) || q < 1 || String(q) !== qtok) {
+        throw new Error(`Expected a quantity (1 or more) at token ${i + 1}, got '${qtok}'.`);
       }
       i++;
       let gap = null;
-      if (i < toks.length) {
-        const nextTok = toks[i];
-        if (/^\d+$/.test(nextTok)) {
-          gap = null;
+      if (i < n && !/^\d+$/.test(tokens[i])) {
+        const tok = tokens[i];
+        if (tok.includes('-')) {
+          const parts = tok.split('-', 2);
+          const lo = parseDuration(parts[0]);
+          const hi = parseDuration(parts[1]);
+          gap = lo <= hi ? [lo, hi] : [hi, lo];
         } else {
-          try {
-            gap = parseGap(nextTok);
-            i++;
-          } catch (e) {
-            gap = null;
-          }
+          const d = parseDuration(tok);
+          gap = [d, d];
         }
+        i++;
       }
-      cycle.push([q, gap]);
+      items.push([q, gap]);
     }
-    return cycle;
+    if (!items.length) {
+      throw new Error("No quantities found. Example: 3 50m 5 60m 7 65m");
+    }
+    return items;
   }
 
-  function parsePlanSyntax(text, defaultGapMins = 60) {
-    const toks = String(text).trim().split(/\s+/).filter(Boolean);
-    if (!toks.length) throw new Error("Plan cannot be empty.");
+  /**
+   * parsePlanSyntax: '2 1h 5 30m 10' -> [[0, 2], [60, 5], [90, 10]].
+   * Matches desktop parse_plan (lines 288-312).
+   */
+  function parsePlanSyntax(text, defaultGapStr = "1h") {
+    let defaultGap = 60;
+    try { defaultGap = parseGap(defaultGapStr); } catch (e) { /* fallback 60 */ }
+
+    const tokens = String(text).toLowerCase().replace(/,/g, ' ').trim().split(/\s+/).filter(Boolean);
     const plan = [];
-    let curDelay = 0.0;
-    let i = 0;
-    while (i < toks.length) {
-      const qtok = toks[i];
-      const q = parseInt(qtok, 10);
-      if (isNaN(q) || q <= 0 || String(q) !== qtok) {
-        throw new Error(`Expected whole quantity at token ${i + 1}, got '${qtok}'.`);
-      }
-      i++;
-      let gapMins = defaultGapMins;
-      if (i < toks.length) {
-        const nextTok = toks[i];
-        if (!/^\d+$/.test(nextTok)) {
-          const [lo, hi] = parseGap(nextTok);
-          gapMins = lo === hi ? lo : (lo + Math.random() * (hi - lo));
-          i++;
+    let elapsed = 0.0;
+    let gap = null;
+
+    for (const tok of tokens) {
+      if (/^\d+$/.test(tok)) {
+        if (plan.length) {
+          elapsed += (gap !== null ? gap : defaultGap);
+        } else {
+          elapsed += (gap || 0);
+        }
+        plan.push([Math.round(elapsed * 100) / 100, parseInt(tok, 10)]);
+        gap = null;
+      } else {
+        try {
+          const gVal = parseGap(tok);
+          gap = (gap || 0) + gVal;
+        } catch (e) {
+          throw new Error(`Can't understand '${tok}'. Use quantities and time tokens (e.g. 2 1h 5 20m-45m 10).`);
         }
       }
-      plan.push([Math.round(curDelay * 100) / 100, q]);
-      curDelay += gapMins;
+    }
+    if (!plan.length) {
+      throw new Error("No quantities found. Example: 2 1h 5 30m 10");
     }
     return plan;
   }
 
+  /**
+   * fmtGap: 52.4 -> '52m' ; 65 -> '1h 05m' ; 120 -> '2h' ; 0.5 -> '30s'.
+   * Matches desktop fmt_gap (lines 472-480).
+   */
+  function fmtGap(minutes) {
+    if (minutes < 1) {
+      return `${Math.round(minutes * 60)}s`;
+    }
+    const mins = Math.round(minutes);
+    const h = Math.floor(mins / 60);
+    const m = mins % 60;
+    if (h && m) {
+      return `${h}h ${String(m).padStart(2, '0')}m`;
+    }
+    return h ? `${h}h` : `${m}m`;
+  }
+
+  /**
+   * gapToken: Minutes -> text the parser accepts: 52.4 -> '52m', 125 -> '2h5m', 0 -> '0m'.
+   * Matches desktop gap_token (lines 483-497).
+   */
+  function gapToken(minutes) {
+    const secs = minutes >= 1 ? Math.round(minutes) * 60 : Math.round(minutes * 60);
+    if (secs <= 0) return "0m";
+    const d = Math.floor(secs / 86400);
+    let rem = secs % 86400;
+    const h = Math.floor(rem / 3600);
+    rem = rem % 3600;
+    const m = Math.floor(rem / 60);
+    const s = rem % 60;
+    const parts = [];
+    if (d) parts.push(`${d}d`);
+    if (h) parts.push(`${h}h`);
+    if (m) parts.push(`${m}m`);
+    if (s) parts.push(`${s}s`);
+    return parts.join('') || "0m";
+  }
+
   // ================================================================
-  //  SCHEDULE GENERATORS (Exact desktop parity)
+  //  SCHEDULE GENERATION ALGORITHMS (Exact desktop parity lines 345-470)
   // ================================================================
 
+  /**
+   * generateSchedule: Repeats cycle until durationMinutes have elapsed.
+   * Matches desktop generate_schedule (lines 345-368).
+   */
   function generateSchedule(cycle, durationMinutes, variancePct, defaultGapMinutes, maxRuns = 800) {
-    const vFrac = Math.max(0, variancePct) / 100.0;
+    const defaultGap = [defaultGapMinutes, defaultGapMinutes];
+    const filled = cycle.map(([q, g]) => [q, g !== null ? g : defaultGap]);
+    const v = Math.max(0.0, variancePct) / 100.0;
     const runs = [];
-    let t = 0.0;
-    let stepIdx = 0;
+    let elapsed = 0.0, idx = 0;
 
-    while (t <= durationMinutes && runs.length < maxRuns) {
-      const [baseQ, gapSpec] = cycle[stepIdx % cycle.length];
-      let q = baseQ;
-      if (vFrac > 0) {
-        const factor = 1.0 - vFrac + Math.random() * (2 * vFrac);
-        q = Math.max(1, Math.round(baseQ * factor));
-      }
-      runs.push([Math.round(t * 100) / 100, q]);
+    while (elapsed < durationMinutes && runs.length < maxRuns) {
+      const [q, [lo, hi]] = filled[idx % filled.length];
+      const factor = v > 0 ? (1 - v + Math.random() * 2 * v) : 1;
+      const qty = Math.max(1, Math.round(q * factor));
+      runs.push([Math.round(elapsed * 100) / 100, qty]);
 
       let gap;
-      if (gapSpec === null) {
-        gap = defaultGapMinutes;
-        if (vFrac > 0) {
-          const factor = 1.0 - vFrac + Math.random() * (2 * vFrac);
-          gap = Math.max(1.0, gap * factor);
-        }
+      if (hi > lo) {
+        gap = lo + Math.random() * (hi - lo);
+      } else if (v > 0) {
+        gap = lo * (1 - v + Math.random() * 2 * v);
       } else {
-        const [lo, hi] = gapSpec;
-        gap = lo === hi ? lo : (lo + Math.random() * (hi - lo));
+        gap = lo;
       }
-
-      t += Math.max(0.1, gap);
-      stepIdx++;
-    }
-
-    if (runs.length && runs[runs.length - 1][0] > durationMinutes) {
-      runs.pop();
+      elapsed += Math.max(1.0, gap);
+      idx++;
     }
     return runs;
   }
 
+  /**
+   * fitTotal: Cuts the schedule off the moment total is reached; tops up if it fell short;
+   * folds a leftover below service minimum into the run before it.
+   * Matches desktop fit_total (lines 371-385).
+   */
   function fitTotal(runs, total, minQ = 1, maxQ = 1e9) {
-    if (!runs.length) return runs;
-    if (runs.length === 1) {
-      runs[0][1] = Math.min(Math.max(total, minQ), maxQ);
-      return runs;
+    const out = [];
+    let acc = 0;
+    for (const [d, qRaw] of runs) {
+      if (acc >= total) break;
+      const q = Math.min(qRaw, total - acc);
+      out.push([d, q]);
+      acc += q;
     }
-    const currentTotal = runs.reduce((acc, [, q]) => acc + q, 0);
-    if (currentTotal === 0) return runs;
-
-    const ratio = total / currentTotal;
-    const scaled = runs.map(([d, q]) => [d, Math.min(Math.max(Math.round(q * ratio), minQ), maxQ)]);
-
-    let diff = total - scaled.reduce((acc, [, q]) => acc + q, 0);
-    const step = diff > 0 ? 1 : -1;
-    let i = 0;
-    const n = scaled.length;
-    while (diff !== 0 && i < n * 10) {
-      const tgt = i % n;
-      if (step > 0 && scaled[tgt][1] < maxQ) {
-        scaled[tgt][1] += 1;
-        diff -= 1;
-      } else if (step < 0 && scaled[tgt][1] > minQ) {
-        scaled[tgt][1] -= 1;
-        diff += 1;
-      }
-      i++;
+    if (out.length && acc < total) {
+      out[out.length - 1][1] += total - acc;
     }
-    return scaled;
+    // A tiny leftover below the service minimum is folded into the run before it (line 383)
+    if (out.length > 1 && out[out.length - 1][1] < minQ && (out[out.length - 2][1] + out[out.length - 1][1] <= maxQ)) {
+      out[out.length - 2][1] += out.pop()[1];
+    }
+    return out;
   }
 
-  function generateForTotal(cycle, durationMinutes, variancePct, defaultGapMinutes, total, minQ = 1, maxQ = 1e9, spread = true, maxRuns = 800) {
-    const clamp = r => {
-      r.forEach(item => { item[1] = Math.min(Math.max(item[1], minQ), maxQ); });
-      return r;
-    };
-
-    if (!spread) {
-      let runs = clamp(generateSchedule(cycle, durationMinutes, variancePct, defaultGapMinutes, maxRuns));
-      if (!runs.length) {
-        const scaled = cycle.map(([q, g]) => [Math.max(q, minQ), g]);
-        runs = clamp(generateSchedule(scaled, durationMinutes, variancePct, defaultGapMinutes, maxRuns));
-      }
-      let running = 0;
-      const kept = [];
-      for (const [d, q] of runs) {
-        if (running + q <= total) {
-          kept.push([d, q]);
-          running += q;
-        } else {
-          const rem = total - running;
-          if (rem >= minQ) {
-            kept.push([d, rem]);
-            running += rem;
-          } else if (kept.length) {
-            kept[kept.length - 1][1] = Math.min(maxQ, kept[kept.length - 1][1] + rem);
-            running += rem;
-          }
-          break;
+  /**
+   * generateForTotal: Delivers exactly total inside durationMinutes.
+   * spread=false: follows pattern and gaps, stops as soon as total is reached.
+   * spread=true : keeps pattern quantities but spaces runs evenly across the window.
+   * Matches desktop generate_for_total (lines 388-428).
+   */
+  function generateForTotal(cycle, durationMinutes, variancePct, defaultGapMinutes, total, minQ = 1, maxQ = 1e9, spread = false, maxRuns = 800) {
+    const v = Math.max(0.0, variancePct) / 100.0;
+    if (spread) {
+      const qtys = [];
+      let idx = 0, acc = 0;
+      while (acc < total) {
+        let q = cycle[idx % cycle.length][0];
+        if (v > 0) {
+          q = Math.max(1, Math.round(q * (1 - v + Math.random() * 2 * v)));
         }
+        q = Math.max(minQ, Math.min(q, maxQ));
+        q = qtys.length >= maxRuns - 1 ? (total - acc) : Math.min(q, total - acc);
+        qtys.push(q);
+        acc += q;
+        idx++;
       }
-      return kept.length ? kept : [[0.0, Math.min(Math.max(total, minQ), maxQ)]];
+      if (qtys.length > 1 && qtys[qtys.length - 1] < minQ && (qtys[qtys.length - 2] + qtys[qtys.length - 1] <= maxQ)) {
+        qtys[qtys.length - 2] += qtys.pop();
+      }
+      const step = durationMinutes / qtys.length;
+      const runs = [];
+      let last = -1.0;
+      for (let i = 0; i < qtys.length; i++) {
+        const jitter = (Math.random() * 2 * v - v) * step;
+        const d = (i === 0) ? 0.0 : Math.max(last + 1.0, i * step + jitter);
+        runs.push([Math.round(d * 100) / 100, qtys[i]]);
+        last = d;
+      }
+      return runs;
     }
 
-    const runs = generateSchedule(cycle, durationMinutes, variancePct, defaultGapMinutes, maxRuns);
-    if (!runs.length) {
-      return [[0.0, Math.min(Math.max(total, minQ), maxQ)]];
+    function clamp(rs) {
+      rs.forEach(r => { r[1] = Math.max(minQ, Math.min(r[1], maxQ)); });
+      return rs;
+    }
+
+    let runs = clamp(generateSchedule(cycle, durationMinutes, variancePct, defaultGapMinutes, maxRuns));
+    const natural = runs.reduce((a, [, q]) => a + q, 0);
+    if (natural < total) {
+      const factor = total / Math.max(1, natural);
+      const scaled = cycle.map(([q, g]) => [q * factor, g]);
+      runs = clamp(generateSchedule(scaled, durationMinutes, variancePct, defaultGapMinutes, maxRuns));
     }
     return fitTotal(runs, total, minQ, maxQ);
   }
 
+  /**
+   * generateForRuns: Exactly nRuns runs, spaced evenly across the delivery time (with random jitter).
+   * Matches desktop generate_for_runs (lines 431-470).
+   */
   function generateForRuns(cycle, durationMinutes, variancePct, nRuns, total = null, minQ = 1, maxQ = 1e9) {
-    if (nRuns < 1 || nRuns > 800) {
-      throw new Error("Number of runs must be between 1 and 800.");
-    }
-    if (nRuns === 1) {
-      const q = total !== null ? total : cycle[0][0];
-      return [[0.0, Math.min(Math.max(q, minQ), maxQ)]];
+    const v = Math.max(0.0, variancePct) / 100.0;
+    const n = nRuns;
+    minQ = Math.max(1, minQ);
+    if (durationMinutes / n < 1) {
+      throw new Error(`${n} runs is too many for this delivery time (gaps would be under a minute).`);
     }
 
-    const vFrac = Math.max(0, variancePct) / 100.0;
-    const nominalGap = durationMinutes / (nRuns - 1);
-    const gaps = [];
-    for (let i = 0; i < nRuns - 1; i++) {
-      if (vFrac > 0) {
-        const factor = 1.0 - vFrac + Math.random() * (2 * vFrac);
-        gaps.push(Math.max(0.5, nominalGap * factor));
-      } else {
-        gaps.push(nominalGap);
-      }
+    const weights = [];
+    for (let i = 0; i < n; i++) {
+      const base = cycle[i % cycle.length][0];
+      const jitter = v > 0 ? (1 - v + Math.random() * 2 * v) : 1;
+      weights.push(base * jitter);
     }
-    const currentSpan = gaps.reduce((a, b) => a + b, 0);
-    const rescale = currentSpan > 0 ? (durationMinutes / currentSpan) : 1.0;
-    const delays = [0.0];
-    let t = 0.0;
-    for (const g of gaps) {
-      t += g * rescale;
-      delays.push(Math.round(t * 100) / 100);
-    }
-    delays[delays.length - 1] = Math.round(durationMinutes * 100) / 100;
 
-    let quantities = [];
-    if (total !== null) {
-      if (vFrac > 0) {
-        const rawWeights = [];
-        for (let i = 0; i < nRuns; i++) {
-          const baseQ = cycle[i % cycle.length][0];
-          const factor = 1.0 - vFrac + Math.random() * (2 * vFrac);
-          rawWeights.push(baseQ * factor);
-        }
-        const weightSum = rawWeights.reduce((a, b) => a + b, 0);
-        let rawQtys = rawWeights.map(w => Math.max(minQ, Math.round(total * w / Math.max(1e-9, weightSum))));
-        let diff = total - rawQtys.reduce((a, b) => a + b, 0);
-        const step = diff > 0 ? 1 : -1;
-        let ptr = 0;
-        while (diff !== 0 && ptr < nRuns * 10) {
-          const tgt = ptr % nRuns;
-          if (step > 0 && rawQtys[tgt] < maxQ) {
-            rawQtys[tgt] += 1;
-            diff -= 1;
-          } else if (step < 0 && rawQtys[tgt] > minQ) {
-            rawQtys[tgt] -= 1;
-            diff += 1;
-          }
-          ptr++;
-        }
-        quantities = rawQtys;
-      } else {
-        const baseQ = Math.max(minQ, Math.floor(total / nRuns));
-        const rem = total - baseQ * nRuns;
-        quantities = [];
-        for (let i = 0; i < nRuns; i++) {
-          quantities.push(baseQ + (i < rem ? 1 : 0));
-        }
-      }
+    let qtys;
+    if (total === null) {
+      qtys = weights.map(w => Math.max(minQ, Math.min(maxQ, Math.max(1, Math.round(w)))));
     } else {
-      quantities = [];
-      for (let i = 0; i < nRuns; i++) {
-        const baseQ = cycle[i % cycle.length][0];
-        let q = baseQ;
-        if (vFrac > 0) {
-          const factor = 1.0 - vFrac + Math.random() * (2 * vFrac);
-          q = Math.max(1, Math.round(baseQ * factor));
+      if (total < n * minQ) {
+        throw new Error(`A total of ${total} is too small for ${n} runs (each run needs at least ${minQ}).`);
+      }
+      const rem = total - n * minQ;
+      const sw = weights.reduce((a, b) => a + b, 0);
+      const raw = weights.map(w => rem * w / (sw || 1));
+      qtys = raw.map(x => minQ + Math.floor(x));
+
+      const indices = Array.from({ length: n }, (_, i) => i);
+      indices.sort((a, b) => (raw[b] - Math.floor(raw[b])) - (raw[a] - Math.floor(raw[a])));
+      const diff = total - qtys.reduce((a, b) => a + b, 0);
+      for (let k = 0; k < diff; k++) {
+        qtys[indices[k]] += 1;
+      }
+
+      // Respect service maximum by moving excess to runs with room (lines 455-462)
+      for (let i = 0; i < n; i++) {
+        while (qtys[i] > maxQ) {
+          let minIdx = 0;
+          for (let k = 1; k < n; k++) {
+            if (qtys[k] < qtys[minIdx]) minIdx = k;
+          }
+          if (qtys[minIdx] >= maxQ) {
+            throw new Error(`A total of ${total} does not fit into ${n} runs of at most ${maxQ}.`);
+          }
+          const move = Math.min(qtys[i] - maxQ, maxQ - qtys[minIdx]);
+          qtys[i] -= move;
+          qtys[minIdx] += move;
         }
-        quantities.push(Math.min(Math.max(q, minQ), maxQ));
       }
     }
 
+    const step = durationMinutes / n;
     const runs = [];
-    for (let i = 0; i < nRuns; i++) {
-      runs.push([delays[i], quantities[i]]);
+    let last = -1.0;
+    for (let i = 0; i < n; i++) {
+      const jitter = (Math.random() * 2 * v - v) * step;
+      const d = (i === 0) ? 0.0 : Math.max(last + 1.0, i * step + jitter);
+      runs.push([Math.round(d * 100) / 100, qtys[i]]);
+      last = d;
     }
     return runs;
   }
 
+  // --- SERVICE LIMITS VALIDATION (Exact desktop check_qty lines 2363-2367) ---
   function checkQty(sid, qty) {
-    const s = state.services[sid];
-    if (s && (qty < s.min || qty > s.max)) {
-      return `Quantity ${qty} is outside this service's limits (${s.min} to ${s.max}).`;
+    if (!sid || isNaN(sid)) return null;
+    const s = state.services[parseInt(sid)] || state.services[String(sid)];
+    if (s) {
+      if (qty < s.min || qty > s.max) {
+        return `Quantity ${qty} is outside this service's limits (${s.min} to ${s.max}).`;
+      }
+    } else {
+      if (qty < 1) return `Quantity must be 1 or more.`;
     }
     return null;
   }
@@ -388,17 +421,8 @@
     return parseDuration(pill || '24h');
   }
 
-  function getNumberOfRuns() {
-    const pill = getSelectedPillVal('auto-runs-pills');
-    if (pill === 'custom') {
-      return Math.max(1, parseInt(el('auto-custom-runs').value.trim()) || 65);
-    }
-    if (pill === 'auto') return null;
-    return Math.max(1, parseInt(pill) || 25);
-  }
-
   // ================================================================
-  //  INITIALIZATION
+  //  APP INITIALIZATION & EVENT LISTENERS
   // ================================================================
 
   document.addEventListener('DOMContentLoaded', () => {
@@ -556,8 +580,9 @@
       if (Array.isArray(svcData)) {
         state.services = {};
         svcData.forEach(s => {
-          state.services[parseInt(s.service)] = {
-            service: parseInt(s.service),
+          const sid = parseInt(s.service);
+          state.services[sid] = {
+            service: sid,
             name: s.name,
             rate: parseFloat(s.rate),
             min: parseInt(s.min) || 1,
@@ -574,17 +599,18 @@
         log(`Connected to panel. Loaded ${count} services. Balance: ${state.balance} ${state.currency}.`);
         renderServicesTable();
 
-        // Refresh service info if sid is already set
+        // Update info labels if SIDs are already entered
         const sid = parseInt(el('auto-sid').value.trim());
         if (sid && state.services[sid]) {
           const s = state.services[sid];
-          el('auto-svc-info').textContent = `min ${s.min}  max ${s.max}  rate ${s.rate} per 1000`;
-          el('order-svc-info').textContent = `min ${s.min}  max ${s.max}  rate ${s.rate} per 1000`;
+          const info = `min ${s.min}  max ${s.max}  rate ${s.rate} per 1000`;
+          el('auto-svc-info').textContent = info;
+          el('order-svc-info').textContent = info;
         }
         const compSid = parseInt(el('comp-sid').value.trim());
         if (compSid && state.services[compSid]) {
           const cs = state.services[compSid];
-          el('comp-svc-info').textContent = `${cs.name.slice(0, 20)} (rate ${cs.rate})`;
+          el('comp-svc-info').textContent = `${cs.name.slice(0, 24)} (min ${cs.min}, max ${cs.max}, rate ${cs.rate})`;
         }
       }
     } catch (err) {
@@ -614,8 +640,7 @@
     }
 
     let html = '';
-    const slice = filtered.slice(0, 300);
-    slice.forEach(s => {
+    filtered.slice(0, 300).forEach(s => {
       html += `
         <tr data-sid="${s.service}" class="service-row" style="cursor: pointer;">
           <td style="font-weight: 700;">${s.service}</td>
@@ -637,7 +662,7 @@
         const s = state.services[sid];
         const info = s ? `min ${s.min}  max ${s.max}  rate ${s.rate} per 1000` : '';
 
-        // Two-way sync to both New Order and Auto Plan tabs (exact desktop parity)
+        // Two-way sync to both New Order and Auto Plan tabs (exact desktop parity line 2358)
         el('order-sid').value = sid;
         el('order-svc-info').textContent = info;
         el('auto-sid').value = sid;
@@ -655,7 +680,8 @@
     el('order-sid').addEventListener('input', () => {
       const val = el('order-sid').value.trim();
       el('auto-sid').value = val;
-      const s = state.services[parseInt(val)];
+      const sid = parseInt(val);
+      const s = state.services[sid];
       const info = s ? `min ${s.min}  max ${s.max}  rate ${s.rate} per 1000` : '';
       el('order-svc-info').textContent = info;
       el('auto-svc-info').textContent = info;
@@ -665,11 +691,24 @@
       el('auto-link').value = el('order-link').value;
     });
 
+    // Preview button with full service limits validation and summary (exact desktop lines 2407-2415)
     el('btn-order-preview').addEventListener('click', () => {
-      const plan = buildManualPlan();
-      if (!plan) return;
-      const lines = plan.map(([d, q]) => `+${fmtGap(d)}: ${q}`);
-      el('order-prev-box').value = `${plan.length} steps scheduled:\n` + lines.join('\n');
+      const r = validateManualOrder();
+      if (!r) return;
+      const { sid, plan } = r;
+      const s = state.services[sid];
+      const total = plan.reduce((a, [, q]) => a + q, 0);
+      const now = Date.now();
+      const lines = plan.map(([d, q], i) => `Step ${i + 1}: ${q} at ${new Date(now + d * 60000).toLocaleTimeString()} (+${Math.round(d)} min)`);
+      if (s) {
+        const cost = total * s.rate / 1000;
+        lines.push(`Total ${total} | estimated cost ${cost.toFixed(4)} ${state.currency}`);
+        if (state.balance !== null) lines.push(`Balance ${state.balance} ${state.currency}`);
+      } else {
+        lines.push(`Total ${total}`);
+      }
+      lines.push('(random ranges are picked again when you start)');
+      el('order-prev-box').value = lines.join('\n');
     });
 
     el('btn-order-start').addEventListener('click', () => {
@@ -700,11 +739,12 @@
   }
 
   function validateManualOrder() {
-    const sid = parseInt(el('order-sid').value.trim());
-    if (!sid || isNaN(sid)) {
+    const sidTxt = el('order-sid').value.trim();
+    if (!sidTxt || !/^\d+$/.test(sidTxt)) {
       alert('Pick a service or type its numeric ID.');
       return null;
     }
+    const sid = parseInt(sidTxt);
     const link = el('order-link').value.trim();
     if (!link.startsWith('http')) {
       alert('Enter the full link (starting with https://).');
@@ -713,6 +753,7 @@
     const plan = buildManualPlan();
     if (!plan) return null;
 
+    // Strict validation of each step quantity against service min/max (desktop line 2385)
     for (const [, qty] of plan) {
       const err = checkQty(sid, qty);
       if (err) {
@@ -726,14 +767,10 @@
   function buildManualPlan() {
     const planTxt = el('order-plan').value.trim();
     const defGapTxt = el('order-gap').value.trim() || '1h';
-    let defGapMins = 60;
-    try { defGapMins = parseDuration(defGapTxt); }
-    catch (e) { alert("Invalid default gap: " + e.message); return null; }
-
     try {
-      return parsePlanSyntax(planTxt, defGapMins);
+      return parsePlanSyntax(planTxt, defGapTxt);
     } catch (e) {
-      alert("Plan syntax error: " + e.message);
+      alert(e.message);
       return null;
     }
   }
@@ -765,14 +802,14 @@
         const sid = parseInt(sidTxt);
         const s = state.services[sid];
         if (s) {
-          el('comp-svc-info').textContent = `${s.name.slice(0, 20)} (rate ${s.rate})`;
-          // Elevate drop qty to service minimum if currently lower
+          el('comp-svc-info').textContent = `${s.name.slice(0, 24)} (min ${s.min}, max ${s.max}, rate ${s.rate})`;
+          // Elevate drop qty to service minimum if currently lower (preventing likes below min)
           const curDropQ = parseInt(el('comp-drop-qty').value.trim()) || 0;
           if (curDropQ < s.min) {
             el('comp-drop-qty').value = s.min;
           }
           if (el('comp-enabled').checked && state.scheduleRuns.length) {
-            rePairCompanion();
+            rePairCompanion(false);
           }
           updateAutoStats();
           return;
@@ -840,7 +877,7 @@
     el('comp-enabled').addEventListener('change', e => {
       el('comp-box').style.display = e.target.checked ? 'flex' : 'none';
       if (e.target.checked && state.scheduleRuns.length) {
-        rePairCompanion();
+        rePairCompanion(false);
       } else {
         state.companionLikes = {};
         renderAutoTable();
@@ -856,14 +893,14 @@
         const isCustom = (pill.dataset.cdur === 'custom');
         el('comp-custom-dur').disabled = !isCustom;
         if (isCustom) el('comp-custom-dur').focus();
-        if (el('comp-enabled').checked && state.scheduleRuns.length) rePairCompanion();
+        if (el('comp-enabled').checked && state.scheduleRuns.length) rePairCompanion(false);
       });
     });
 
     el('comp-custom-dur').addEventListener('input', () => {
       setSelectedPill('comp-dur-pills', 'custom');
       el('comp-custom-dur').disabled = false;
-      if (el('comp-enabled').checked && state.scheduleRuns.length) rePairCompanion();
+      if (el('comp-enabled').checked && state.scheduleRuns.length) rePairCompanion(false);
     });
 
     // Companion Number of runs pills
@@ -883,14 +920,14 @@
             if (x.tagName === 'INPUT') x.disabled = !isAuto;
           });
         }
-        if (el('comp-enabled').checked && state.scheduleRuns.length) rePairCompanion();
+        if (el('comp-enabled').checked && state.scheduleRuns.length) rePairCompanion(false);
       });
     });
 
     el('comp-custom-runs').addEventListener('input', () => {
       setSelectedPill('comp-runs-pills', 'custom');
       el('comp-custom-runs').disabled = false;
-      if (el('comp-enabled').checked && state.scheduleRuns.length) rePairCompanion();
+      if (el('comp-enabled').checked && state.scheduleRuns.length) rePairCompanion(false);
     });
 
     // Companion Interval pills
@@ -901,28 +938,28 @@
         const isCustom = (pill.dataset.cint === 'custom');
         el('comp-custom-int').disabled = !isCustom;
         if (isCustom) el('comp-custom-int').focus();
-        if (el('comp-enabled').checked && state.scheduleRuns.length) rePairCompanion();
+        if (el('comp-enabled').checked && state.scheduleRuns.length) rePairCompanion(false);
       });
     });
 
     el('comp-custom-int').addEventListener('input', () => {
       setSelectedPill('comp-int-pills', 'custom');
       el('comp-custom-int').disabled = false;
-      if (el('comp-enabled').checked && state.scheduleRuns.length) rePairCompanion();
+      if (el('comp-enabled').checked && state.scheduleRuns.length) rePairCompanion(false);
     });
 
     // Companion Total Qty & Qty/drop inputs
     el('comp-total-qty').addEventListener('input', () => {
-      if (el('comp-enabled').checked && state.scheduleRuns.length) rePairCompanion();
+      if (el('comp-enabled').checked && state.scheduleRuns.length) rePairCompanion(false);
     });
     el('comp-drop-qty').addEventListener('input', () => {
-      if (el('comp-enabled').checked && state.scheduleRuns.length) rePairCompanion();
+      if (el('comp-enabled').checked && state.scheduleRuns.length) rePairCompanion(false);
     });
 
     // Companion Variance slider
     el('comp-var-slider').addEventListener('input', e => {
       el('comp-var-lbl').textContent = `±${e.target.value}%`;
-      if (el('comp-enabled').checked && state.scheduleRuns.length) rePairCompanion();
+      if (el('comp-enabled').checked && state.scheduleRuns.length) rePairCompanion(false);
     });
 
     // Re-pair button
@@ -944,6 +981,11 @@
     el('btn-auto-regenerate').addEventListener('click', generateAutoSchedule);
     el('btn-auto-start').addEventListener('click', startAutoPlan);
     el('btn-auto-add').addEventListener('click', () => {
+      // Set default minimums on add modal
+      const compSid = parseInt(el('comp-sid').value.trim());
+      const compS = state.services[compSid];
+      const sMin = (compS && compS.min) ? compS.min : 10;
+      el('add-likes-qty').placeholder = `Min ${sMin} (or leave empty)`;
       el('modal-add').classList.remove('hidden');
     });
 
@@ -956,7 +998,7 @@
     applyAutoPreset('10k');
   }
 
-  // --- PRESET HANDLING (Exact desktop on_view_preset_pick parity) ---
+  // --- PRESET HANDLING (Exact desktop on_view_preset_pick parity lines 1249-1282) ---
   function applyAutoPreset(key) {
     state.activePreset = key;
     if (key === 'custom') {
@@ -1045,10 +1087,10 @@
   }
 
   // ================================================================
-  //  generateAutoSchedule — Exact desktop generate_auto parity
+  //  generateAutoSchedule — Exact desktop generate_auto parity (lines 1508-1594)
   // ================================================================
   function generateAutoSchedule() {
-    // 1. Service validation
+    // 1. Service validation (lines 1509-1512)
     const sidTxt = el('auto-sid').value.trim();
     if (!sidTxt || !/^\d+$/.test(sidTxt)) {
       alert("Pick a service, or type its numeric ID, on the New order tab.");
@@ -1063,7 +1105,7 @@
       return;
     }
 
-    // 3. Pattern parsing
+    // 3. Pattern parsing (lines 1517-1521)
     let cycle;
     const advBox = el('adv-pattern-box');
     const advVisible = advBox && advBox.style.display !== 'none';
@@ -1079,7 +1121,7 @@
       cycle = [[3, [50, 50]], [5, [60, 60]], [7, [65, 65]]];
     }
 
-    // 4. Duration parsing
+    // 4. Duration parsing (lines 1522-1530)
     let durationMin;
     const durChoice = getSelectedPillVal('auto-dur-pills');
     try {
@@ -1091,7 +1133,7 @@
       return;
     }
 
-    // 5. Total quantity validation
+    // 5. Total quantity validation from input (lines 1532-1539) - NOT hardcoded preset
     const totalTxt = el('auto-total-views').value.trim();
     let total = null;
     if (totalTxt) {
@@ -1102,7 +1144,7 @@
       total = parseInt(totalTxt);
     }
 
-    // 6. Number of runs validation
+    // 6. Number of runs validation (lines 1541-1548)
     let nRuns = null;
     const choice = getSelectedPillVal('auto-runs-pills');
     if (choice !== 'auto') {
@@ -1114,14 +1156,14 @@
       nRuns = parseInt(nTxt);
     }
 
-    // 7. Check total against service limits
+    // 7. Check total against service limits (lines 1550-1554)
     const s = state.services[sid];
     if (total !== null && s && !(s.min <= total && total <= s.max)) {
       alert(`Total ${total} is outside this service's limits (${s.min} to ${s.max}).`);
       return;
     }
 
-    // 8. Scale pattern if pattern is below service min
+    // 8. Scale pattern if pattern quantities are below service min (lines 1555-1563)
     if (s && s.min > 0 && total === null) {
       const smallest = Math.min(...cycle.map(([q]) => q));
       if (smallest < s.min) {
@@ -1131,11 +1173,11 @@
       }
     }
 
-    // 9. Compute default gap from pattern
+    // 9. Compute default gap from pattern (lines 1564-1565)
     const mids = cycle.filter(([, g]) => g !== null).map(([, g]) => (g[0] + g[1]) / 2);
     const defaultGap = mids.length ? mids.reduce((a, b) => a + b, 0) / mids.length : 60;
 
-    // 10. Generate runs
+    // 10. Generate runs (lines 1566-1585)
     const variancePct = parseInt(el('auto-var-slider').value) || 20;
     const spread = el('auto-spread-chk').checked;
     const minQ = s ? s.min : 1;
@@ -1161,7 +1203,7 @@
 
     log(`Schedule built: ${runs.length} run(s), ${runs.reduce((a, [, q]) => a + q, 0)} total, last one ${fmtGap(runs.length ? runs[runs.length - 1][0] : 0)} from the start.`);
 
-    // 11. Auto re-pair companion if enabled
+    // 11. Auto re-pair companion if enabled (line 1589)
     if (el('comp-enabled').checked) {
       rePairCompanion(false);
     } else {
@@ -1171,8 +1213,8 @@
   }
 
   // ================================================================
-  //  rePairCompanion — Exact desktop re_pair_companion parity
-  //  (Enforces companion service minimum, interval & duration)
+  //  rePairCompanion — Exact desktop re_pair_companion parity (lines 1378-1506)
+  //  Strictly enforces service minimum for Likes (no like below service min allowed)
   // ================================================================
   function rePairCompanion(showAlerts = false) {
     if (!state.scheduleRuns.length) {
@@ -1187,10 +1229,11 @@
     }
     const csid = parseInt(compSidTxt);
     const compS = state.services[csid];
-    const sMin = compS ? compS.min : 1;
-    const sMax = compS ? compS.max : 1e9;
+    // Strict service minimum floor: defaults to at least 10 if not yet loaded from panel
+    const sMin = (compS && compS.min) ? compS.min : 10;
+    const sMax = (compS && compS.max) ? compS.max : 1e9;
 
-    // 1. Total Quantity or Qty per drop
+    // 1. Total Quantity or Qty per drop (lines 1391-1409)
     const totalTxt = el('comp-total-qty').value.trim();
     let compTotal = null;
     if (totalTxt) {
@@ -1199,6 +1242,10 @@
         return;
       }
       compTotal = parseInt(totalTxt);
+      if (compTotal < sMin) {
+        if (showAlerts) alert(`Total likes quantity ${compTotal} is below the service minimum (${sMin}).`);
+        return;
+      }
       if (compS && !(compS.min <= compTotal && compTotal <= compS.max)) {
         if (showAlerts) alert(`Total quantity ${compTotal} is outside 2nd service limits (${compS.min} to ${compS.max}).`);
         return;
@@ -1206,7 +1253,7 @@
     }
 
     const qtyTxt = el('comp-drop-qty').value.trim();
-    let baseQty = 25;
+    let baseQty = sMin; // default to at least service minimum
     if (qtyTxt) {
       if (!/^\d+$/.test(qtyTxt) || parseInt(qtyTxt) < 1) {
         if (showAlerts) alert("Quantity per drop must be 1 or more.");
@@ -1220,7 +1267,7 @@
       el('comp-drop-qty').value = sMin;
     }
 
-    // 2. Delivery Time / Duration for companion
+    // 2. Delivery Time / Duration for companion (lines 1411-1428)
     const durChoice = getSelectedPillVal('comp-dur-pills');
     let maxCompDelay;
     if (durChoice === 'match') {
@@ -1243,7 +1290,7 @@
     });
     if (!eligible.length) eligible = [0];
 
-    // 3. Number of Runs or Auto (Interval) — exact desktop logic
+    // 3. Number of Runs or Auto (Interval) — exact desktop logic (lines 1430-1461)
     const nrunsChoice = getSelectedPillVal('comp-runs-pills');
     let chosenIndices = [];
 
@@ -1265,7 +1312,7 @@
         }
       }
     } else {
-      // Auto: drop by interval (e.g. 1h default, 30m, 2h)
+      // Auto: drop by interval (e.g. 1h default, 30m, 2h) - exact desktop lines 1446-1460
       const intChoice = getSelectedPillVal('comp-int-pills');
       let intervalMins;
       try {
@@ -1288,7 +1335,15 @@
       }
     }
 
-    // 4. Calculate Quantities with Random Variance
+    // Truncate chosenIndices if compTotal cannot support that many runs at sMin
+    if (compTotal !== null) {
+      const maxPossibleDrops = Math.max(1, Math.floor(compTotal / sMin));
+      if (chosenIndices.length > maxPossibleDrops) {
+        chosenIndices = chosenIndices.slice(0, maxPossibleDrops);
+      }
+    }
+
+    // 4. Calculate Quantities with Random Variance (lines 1463-1499)
     const variancePct = parseInt(el('comp-var-slider').value) || 20;
     const k = chosenIndices.length;
     let quantities = [];
@@ -1328,7 +1383,7 @@
           const factor = 1.0 - (variancePct / 100) + Math.random() * (2 * variancePct / 100);
           q = Math.round(baseQty * factor);
         }
-        // Enforce companion service limits (likes should only be >= service minimum)
+        // Strict service minimum and maximum clamping
         return Math.max(sMin, Math.min(q, sMax));
       });
     }
@@ -1440,7 +1495,7 @@
   }
 
   // ================================================================
-  //  startAutoPlan — Exact desktop auto_start_plan parity
+  //  startAutoPlan — Exact desktop auto_start_plan parity (lines 2151-2215)
   // ================================================================
   async function startAutoPlan() {
     if (!state.scheduleRuns.length) {
@@ -1454,6 +1509,9 @@
       return;
     }
     const sid = parseInt(sidTxt);
+    const s = state.services[sid];
+    const vMin = (s && s.min) ? s.min : 1;
+    const vMax = (s && s.max) ? s.max : 1e9;
 
     const link = el('auto-link').value.trim();
     if (!link.startsWith('http')) {
@@ -1462,9 +1520,12 @@
     }
 
     // Validate every view quantity against service limits
-    for (const [, qty] of state.scheduleRuns) {
-      const err = checkQty(sid, qty);
-      if (err) { alert(err); return; }
+    for (let i = 0; i < state.scheduleRuns.length; i++) {
+      const [, qty] = state.scheduleRuns[i];
+      if (qty < vMin || qty > vMax) {
+        alert(`Run #${i + 1} views quantity ${qty} is outside this service's limits (${vMin} to ${vMax}).`);
+        return;
+      }
     }
 
     // Validate companion quantities against service limits
@@ -1477,18 +1538,21 @@
         return;
       }
       compSid = parseInt(compSidTxt);
-      for (const cq of Object.values(state.companionLikes)) {
-        const err = checkQty(compSid, cq);
-        if (err) {
-          alert("Companion Quantity Error: " + err);
+      const compS = state.services[compSid];
+      const sMin = (compS && compS.min) ? compS.min : 10;
+      const sMax = (compS && compS.max) ? compS.max : 1e9;
+
+      for (const [runIdxStr, cq] of Object.entries(state.companionLikes)) {
+        const runNum = parseInt(runIdxStr) + 1;
+        if (cq < sMin || cq > sMax) {
+          alert(`Run #${runNum} likes drop quantity ${cq} is outside this service's limits (${sMin} to ${sMax}). Minimum allowed is ${sMin}.`);
           return;
         }
       }
     }
 
-    // Cost calculation & balance check
+    // Cost calculation & balance check (lines 2182-2186)
     const totalViews = state.scheduleRuns.reduce((a, [, q]) => a + q, 0);
-    const s = state.services[sid];
     let cost = s ? (totalViews * s.rate / 1000) : null;
     const totalLikes = compOn ? Object.values(state.companionLikes).reduce((a, b) => a + b, 0) : 0;
     if (cost !== null && compOn && totalLikes > 0) {
@@ -1583,7 +1647,7 @@
   let editStepIdx = -1;
 
   function initModals() {
-    // --- EDIT RUN MODAL ---
+    // --- EDIT RUN MODAL (Exact desktop run_dialog parity lines 1736-1805) ---
     el('btn-edit-cancel').addEventListener('click', () => el('modal-edit').classList.add('hidden'));
 
     el('btn-edit-save').addEventListener('click', () => {
@@ -1593,13 +1657,16 @@
       const lQty = parseInt(el('edit-likes-qty').value.trim()) || 0;
       const shift = el('edit-shift-chk').checked;
 
-      if (vQty <= 0) {
-        alert("Views quantity must be 1 or more.");
+      const sidTxt = el('auto-sid').value.trim();
+      const sid = parseInt(sidTxt);
+      const s = state.services[sid];
+      const vMin = (s && s.min) ? s.min : 1;
+      const vMax = (s && s.max) ? s.max : 1e9;
+
+      if (vQty < vMin || vQty > vMax) {
+        alert(`Views quantity ${vQty} is outside this service's limits (${vMin} to ${vMax}). Minimum allowed is ${vMin}.`);
         return;
       }
-      const sid = parseInt(el('auto-sid').value.trim());
-      const err = checkQty(sid, vQty);
-      if (err) { alert(err); return; }
 
       let newGap;
       try {
@@ -1609,10 +1676,26 @@
         return;
       }
 
-      if (lQty > 0) {
-        const compSid = parseInt(el('comp-sid').value.trim());
-        const cerr = checkQty(compSid, lQty);
-        if (cerr) { alert(cerr); return; }
+      // Strict validation for Likes drop quantity
+      if (el('comp-enabled').checked && lQty > 0) {
+        const compSidTxt = el('comp-sid').value.trim();
+        if (!compSidTxt || !/^\d+$/.test(compSidTxt)) {
+          alert("Please enter a numeric Likes Service ID first.");
+          return;
+        }
+        const compSid = parseInt(compSidTxt);
+        const compS = state.services[compSid];
+        const sMin = (compS && compS.min) ? compS.min : 10;
+        const sMax = (compS && compS.max) ? compS.max : 1e9;
+
+        if (lQty < sMin) {
+          alert(`Likes quantity ${lQty} is below this service's minimum of ${sMin}. You cannot enter less than ${sMin} likes (enter 0 to remove).`);
+          return;
+        }
+        if (lQty > sMax) {
+          alert(`Likes quantity ${lQty} is above this service's maximum of ${sMax}.`);
+          return;
+        }
       }
 
       const oldDelay = state.scheduleRuns[editStepIdx][0];
@@ -1648,22 +1731,25 @@
       updateAutoStats();
     });
 
-    // --- ADD RUN MODAL ---
+    // --- ADD RUN MODAL (Exact desktop auto_add parity lines 1872-1909) ---
     el('btn-add-cancel').addEventListener('click', () => el('modal-add').classList.add('hidden'));
 
     el('btn-add-save').addEventListener('click', () => {
       const vQty = parseInt(el('add-views-qty').value.trim()) || 0;
       const gapTxt = el('add-gap').value.trim() || '30m';
       const lQtyTxt = el('add-likes-qty').value.trim();
-      const lQty = lQtyTxt ? parseInt(lQtyTxt) : null;
+      const lQty = lQtyTxt ? parseInt(lQtyTxt) : 0;
 
-      if (vQty <= 0) {
-        alert("Views quantity must be 1 or more.");
+      const sidTxt = el('auto-sid').value.trim();
+      const sid = parseInt(sidTxt);
+      const s = state.services[sid];
+      const vMin = (s && s.min) ? s.min : 1;
+      const vMax = (s && s.max) ? s.max : 1e9;
+
+      if (vQty < vMin || vQty > vMax) {
+        alert(`Views quantity ${vQty} is outside service limits (${vMin} to ${vMax}). Minimum allowed is ${vMin}.`);
         return;
       }
-      const sid = parseInt(el('auto-sid').value.trim());
-      const err = checkQty(sid, vQty);
-      if (err) { alert(err); return; }
 
       let gapMins;
       try {
@@ -1673,10 +1759,25 @@
         return;
       }
 
-      if (lQty !== null && lQty > 0) {
-        const compSid = parseInt(el('comp-sid').value.trim());
-        const cerr = checkQty(compSid, lQty);
-        if (cerr) { alert(cerr); return; }
+      if (el('comp-enabled').checked && lQty > 0) {
+        const compSidTxt = el('comp-sid').value.trim();
+        if (!compSidTxt || !/^\d+$/.test(compSidTxt)) {
+          alert("Please enter a numeric Likes Service ID first.");
+          return;
+        }
+        const compSid = parseInt(compSidTxt);
+        const compS = state.services[compSid];
+        const sMin = (compS && compS.min) ? compS.min : 10;
+        const sMax = (compS && compS.max) ? compS.max : 1e9;
+
+        if (lQty < sMin) {
+          alert(`Likes quantity ${lQty} is below this service's minimum of ${sMin}. Minimum allowed is ${sMin}.`);
+          return;
+        }
+        if (lQty > sMax) {
+          alert(`Likes quantity ${lQty} is above this service's maximum of ${sMax}.`);
+          return;
+        }
       }
 
       const lastDelay = state.scheduleRuns.length ? state.scheduleRuns[state.scheduleRuns.length - 1][0] : 0.0;
@@ -1684,7 +1785,7 @@
 
       // Add run and preserve companion map
       const decorated = state.scheduleRuns.map((r, idx) => [r[0], r[1], state.companionLikes[idx] || null]);
-      decorated.push([newDelay, vQty, lQty]);
+      decorated.push([newDelay, vQty, (lQty > 0 ? lQty : null)]);
       decorated.sort((a, b) => a[0] - b[0]);
 
       state.scheduleRuns = decorated.map(x => [x[0], x[1]]);
@@ -1702,32 +1803,62 @@
     el('btn-step-cancel').addEventListener('click', () => el('modal-step').classList.add('hidden'));
   }
 
-  // Table row actions
+  // --- ROW ACTIONS: EDIT STEP MODAL POPUP ---
   window.anoxyEditStep = function (i) {
     editStepIdx = i;
     const run = state.scheduleRuns[i];
     const prev = i ? state.scheduleRuns[i - 1][0] : 0.0;
     const gapMins = i ? (run[0] - prev) : run[0];
 
+    const sid = parseInt(el('auto-sid').value.trim());
+    const s = state.services[sid];
+    const vMin = (s && s.min) ? s.min : 1;
+    const vMax = (s && s.max) ? s.max : 1e9;
+
     el('modal-edit-title').textContent = `Edit run ${i + 1}`;
     el('edit-views-qty').value = run[1];
+    el('edit-views-qty').min = vMin;
+    el('edit-views-qty').max = vMax;
+    el('modal-edit-qty-lbl').textContent = `Views Quantity (min ${vMin}, max ${vMax})`;
+
     el('edit-gap').value = gapToken(gapMins);
-    el('modal-edit-gap-lbl').textContent = i ? "Gap after previous run (e.g. 30m, 1h)" : "Start in (minutes from start)";
+    el('modal-edit-gap-lbl').textContent = i ? "Gap after previous run (e.g. 30m, 1h, 45m)" : "Start in (minutes from start)";
 
     const compOn = el('comp-enabled').checked;
     el('edit-likes-group').style.display = compOn ? 'block' : 'none';
-    el('edit-likes-qty').value = state.companionLikes[i] || 0;
 
-    // Shift checkbox visible if not last run
+    if (compOn) {
+      const compSid = parseInt(el('comp-sid').value.trim());
+      const compS = state.services[compSid];
+      const sMin = (compS && compS.min) ? compS.min : 10;
+      const sMax = (compS && compS.max) ? compS.max : 1e9;
+      el('edit-likes-qty').min = sMin;
+      el('edit-likes-qty').max = sMax;
+      el('edit-likes-qty').placeholder = `min ${sMin}, max ${sMax}`;
+      const curLikes = state.companionLikes[i];
+      el('edit-likes-qty').value = curLikes !== undefined ? curLikes : 0;
+    }
+
     el('edit-shift-group').style.display = (i < state.scheduleRuns.length - 1) ? 'flex' : 'none';
     el('edit-shift-chk').checked = true;
 
     el('modal-edit').classList.remove('hidden');
   };
 
+  // --- ROW ACTIONS: EDIT LIKES BADGE (Exact desktop lines 1678-1705) ---
   window.anoxyEditLikes = function (i) {
-    const curQ = state.companionLikes[i] || 25;
-    const ans = prompt(`Set like quantity for run ${i + 1} (0 to remove):`, curQ);
+    const compSidTxt = el('comp-sid').value.trim();
+    if (!compSidTxt || !/^\d+$/.test(compSidTxt)) {
+      alert("Please enter a numeric 2nd Service ID (Likes) first.");
+      return;
+    }
+    const compSid = parseInt(compSidTxt);
+    const compS = state.services[compSid];
+    const sMin = (compS && compS.min) ? compS.min : 10;
+    const sMax = (compS && compS.max) ? compS.max : 1e9;
+
+    const curQ = state.companionLikes[i] || sMin;
+    const ans = prompt(`Run #${i + 1} Likes drop:\n\nEnter quantity (min ${sMin}, max ${sMax}, or 0 to remove):`, curQ);
     if (ans === null) return;
     const q = parseInt(ans.trim());
     if (isNaN(q) || q < 0) {
@@ -1736,33 +1867,47 @@
     }
     if (q === 0) {
       delete state.companionLikes[i];
+      log(`Removed likes drop from Run #${i + 1}.`);
+    } else if (q < sMin) {
+      alert(`Likes quantity ${q} is below this service's minimum of ${sMin}. You cannot enter less than ${sMin} likes.`);
+      return;
+    } else if (q > sMax) {
+      alert(`Likes quantity ${q} is above this service's maximum of ${sMax}.`);
+      return;
     } else {
-      const compSid = parseInt(el('comp-sid').value.trim());
-      const err = checkQty(compSid, q);
-      if (err) { alert(err); return; }
       state.companionLikes[i] = q;
+      log(`Set Run #${i + 1} likes drop to ${q}.`);
     }
     renderAutoTable();
     updateAutoStats();
   };
 
+  // --- ROW ACTIONS: ADD LIKES BADGE (Exact desktop lines 1707-1734) ---
   window.anoxyAddLikes = function (i) {
-    const compSid = parseInt(el('comp-sid').value.trim());
+    const compSidTxt = el('comp-sid').value.trim();
+    if (!compSidTxt || !/^\d+$/.test(compSidTxt)) {
+      alert("Please enter a numeric 2nd Service ID (Likes) first.");
+      return;
+    }
+    const compSid = parseInt(compSidTxt);
     const compS = state.services[compSid];
-    const sMin = compS ? compS.min : 1;
-    const sMax = compS ? compS.max : 1e9;
-    let defQ = parseInt(el('comp-drop-qty').value.trim()) || 25;
+    const sMin = (compS && compS.min) ? compS.min : 10;
+    const sMax = (compS && compS.max) ? compS.max : 1e9;
+
+    let defQ = parseInt(el('comp-drop-qty').value.trim()) || sMin;
     if (defQ < sMin) defQ = sMin;
     if (defQ > sMax) defQ = sMax;
 
     state.companionLikes[i] = defQ;
+    log(`Added ${defQ} likes to Run #${i + 1}.`);
     renderAutoTable();
     updateAutoStats();
   };
 
+  // --- ROW ACTIONS: DELETE STEP (Exact desktop lines 1910-1925) ---
   window.anoxyDeleteStep = function (i) {
     state.scheduleRuns.splice(i, 1);
-    // Re-index companion map (shift keys down, exact desktop auto_delete parity lines 1910-1925)
+    // Shift keys down in companion map for all runs after i
     const newMap = {};
     for (const [k, v] of Object.entries(state.companionLikes)) {
       const ki = parseInt(k);
@@ -1774,7 +1919,7 @@
     updateAutoStats();
   };
 
-  // --- IMPORT / EXPORT (Exact desktop parity lines 1927-2005) ---
+  // --- IMPORT / EXPORT (Exact desktop lines 1927-2005) ---
   function exportSchedule() {
     if (!state.scheduleRuns.length) {
       alert("No schedule to export.");
@@ -1867,26 +2012,32 @@
   }
 
   // ================================================================
-  //  TAB 4: MY PLANS & STEP ACTIONS
+  //  TAB 4: MY PLANS & STEP ACTIONS (Exact desktop lines 2269-2276)
   // ================================================================
   function initPlans() {
     el('btn-plan-refresh').addEventListener('click', refreshPlans);
     el('btn-plan-cancel').addEventListener('click', cancelSelectedPlan);
 
-    // Step actions (exact desktop parity lines 2269-2276)
+    // Step actions: Change quantity (line 2269)
     el('btn-step-qty').addEventListener('click', () => {
       const step = getSelectedStep();
       if (!step) { alert("Select a pending step first."); return; }
       if (step.status !== 'pending') { alert("Only a 'pending' step can be edited."); return; }
-      const ans = prompt("New quantity for this step:", step.quantity);
+      const sid = step.service_id;
+      const s = state.services[sid];
+      const minVal = (s && s.min) ? s.min : 1;
+      const maxVal = (s && s.max) ? s.max : 1e9;
+      const ans = prompt(`New quantity for Step #${step.step_no} (min ${minVal}, max ${maxVal}):`, step.quantity);
       if (ans === null) return;
       const q = parseInt(ans.trim());
-      if (isNaN(q) || q <= 0) { alert("Quantity must be a whole number, 1 or more."); return; }
-      const err = checkQty(step.service_id, q);
-      if (err) { alert(err); return; }
+      if (isNaN(q) || q < minVal || q > maxVal) {
+        alert(`Quantity must be a whole number between ${minVal} and ${maxVal}.`);
+        return;
+      }
       updateCloudStep(step.id, { quantity: q });
     });
 
+    // Step actions: Move step from now (line 2270)
     el('btn-step-move').addEventListener('click', () => {
       const step = getSelectedStep();
       if (!step) { alert("Select a pending step first."); return; }
@@ -1902,6 +2053,7 @@
       }
     });
 
+    // Step actions: Shift this + later steps (line 2271)
     el('btn-step-shift').addEventListener('click', () => {
       const step = getSelectedStep();
       if (!step) { alert("Select a pending step first."); return; }
@@ -1921,6 +2073,7 @@
       }
     });
 
+    // Step actions: Delete step (line 2274)
     el('btn-step-del').addEventListener('click', () => {
       const step = getSelectedStep();
       if (!step) { alert("Select a step first."); return; }
