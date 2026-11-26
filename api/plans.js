@@ -1,39 +1,7 @@
 // api/plans.js - Manages saving, listing, and updating scheduled plans
-const https = require('https');
-const { dispatchDueSteps } = require('./cron');
+const { postRequest, placePanelOrder, extractJson } = require('./cron');
 
 const DEFAULT_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyq43d3TxNxQ8bdG_Ih_n0K0gfhQNkW6oTQ6uSo_FxsQCkUh3_m4xHQ5Z_xZsJWAxEv/exec';
-
-function postGoogle(url, data) {
-  return new Promise((resolve, reject) => {
-    const body = JSON.stringify(data);
-    const u = new URL(url);
-    const req = https.request({
-      hostname: u.hostname,
-      path: u.pathname + u.search,
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(body)
-      }
-    }, (res) => {
-      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        https.get(res.headers.location, (redir) => {
-          let out = '';
-          redir.on('data', d => out += d);
-          redir.on('end', () => resolve(out));
-        }).on('error', reject);
-        return;
-      }
-      let out = '';
-      res.on('data', d => out += d);
-      res.on('end', () => resolve(out));
-    });
-    req.on('error', reject);
-    req.write(body);
-    req.end();
-  });
-}
 
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -49,76 +17,124 @@ module.exports = async (req, res) => {
 
   try {
     if (req.method === 'POST') {
-      // Save new plan with steps
+      // Check if POST is for add_step vs save_plan
+      if (req.body && req.body.action === 'add_step') {
+        const out = await postRequest(scriptUrl, req.body, true);
+        return res.status(200).json(extractJson(out) || { status: 'ok' });
+      }
+
+      // Save new plan with steps & immediately dispatch any due-now steps
       const { plan_name, service_id, link, api_url, api_key, steps } = req.body || {};
       if (!steps || !steps.length) {
         return res.status(400).json({ error: 'No steps provided' });
       }
 
-      const payload = {
-        action: 'save_plan',
-        plan: {
-          id: 'plan_' + Date.now(),
-          name: plan_name || `Plan ${new Date().toLocaleString()}`,
-          service_id: service_id,
-          link: link,
-          api_url: api_url,
-          api_key: api_key,
-          created_at: Date.now()
-        },
-        steps: steps.map((s, idx) => ({
-          step_no: idx + 1,
-          run_at: s.run_at, // timestamp in ms
-          service_id: s.service_id || service_id,
-          link: s.link || link,
-          quantity: s.quantity,
-          status: 'pending',
-          api_url: api_url,
-          api_key: api_key
-        }))
+      const planId = 'plan_' + Date.now();
+      const now = Date.now();
+      const planObj = {
+        id: planId,
+        name: plan_name || `Plan ${new Date().toLocaleString()}`,
+        service_id: service_id,
+        link: link,
+        api_url: api_url,
+        api_key: api_key,
+        created_at: now
       };
 
-      const out = await postGoogle(scriptUrl, payload);
+      const preparedSteps = steps.map((s, idx) => ({
+        id: `${planId}_step_${s.step_no || (idx + 1)}`,
+        plan_id: planId,
+        step_no: s.step_no || (idx + 1),
+        run_at: Number(s.run_at),
+        service_id: s.service_id || service_id,
+        link: s.link || link,
+        quantity: s.quantity,
+        status: 'pending',
+        order_id: '',
+        provider_status: '',
+        error: '',
+        api_url: api_url,
+        api_key: api_key
+      }));
 
-      // Immediately dispatch any due step (like step 1 'now') directly to provider (exact desktop parity)
-      try {
-        await dispatchDueSteps(scriptUrl);
-      } catch (dispatchErr) {
-        console.error('Instant step dispatch error:', dispatchErr.message);
+      // Dispatch steps already due right now (run_at <= now + 5s) IMMEDIATELY before saving
+      const immediateSteps = [];
+      for (const st of preparedSteps) {
+        if (st.run_at <= Date.now() + 5000 && api_url && api_key) {
+          try {
+            const outcome = await placePanelOrder({
+              api_url,
+              api_key,
+              service_id: st.service_id,
+              link: st.link,
+              quantity: st.quantity
+            });
+            st.status = outcome.status;
+            st.order_id = outcome.orderId || '';
+            st.provider_status = outcome.providerStatus || '';
+            st.error = outcome.errorMsg || '';
+            if (outcome.nextRunAt) st.run_at = outcome.nextRunAt;
+            immediateSteps.push(st);
+          } catch (dispErr) {
+            const isTimeout = dispErr.message && dispErr.message.toLowerCase().includes('timeout');
+            st.status = isTimeout ? 'unknown' : 'failed';
+            st.error = dispErr.message;
+            immediateSteps.push(st);
+          }
+        }
       }
 
-      try {
-        res.status(200).json(JSON.parse(out));
-      } catch {
-        res.status(200).json({ status: 'ok', plan_id: payload.plan.id });
+      const payload = {
+        action: 'save_plan',
+        plan: planObj,
+        steps: preparedSteps
+      };
+
+      const out = await postRequest(scriptUrl, payload, true);
+      const savedJson = extractJson(out);
+
+      if (savedJson && savedJson.status === 'error') {
+        return res.status(200).json(savedJson);
       }
+
+      // Backward compatibility: if an older Apps Script ignored status/order_id during save_plan,
+      // push explicit update_step calls for steps that were just dispatched immediately
+      if (immediateSteps.length && (!savedJson || !savedJson.supports_status)) {
+        await Promise.all(immediateSteps.map(st =>
+          postRequest(scriptUrl, {
+            action: 'update_step',
+            step_id: st.id,
+            status: st.status,
+            order_id: st.order_id || '',
+            provider_status: st.provider_status || '',
+            error: st.error || '',
+            run_at: st.run_at
+          }, true).catch(() => {})
+        ));
+      }
+
+      res.status(200).json({
+        status: 'ok',
+        plan_id: planId,
+        plan: { id: planId, name: planObj.name, service_id, link, created_at: now },
+        steps: preparedSteps.map(({ api_url: _u, api_key: _k, ...rest }) => rest)
+      });
     } else if (req.method === 'GET') {
       // Fetch active plans and steps
       const payload = { action: 'get_plans' };
-      const out = await postGoogle(scriptUrl, payload);
-      try {
-        res.status(200).json(JSON.parse(out));
-      } catch {
-        res.status(200).json({ plans: [], steps: [] });
-      }
+      const out = await postRequest(scriptUrl, payload, true);
+      res.status(200).json(extractJson(out) || { plans: [], steps: [] });
     } else if (req.method === 'PUT') {
-      // Update individual step (quantity, run_at, status)
-      const payload = { action: 'update_step', ...(req.body || {}) };
-      const out = await postGoogle(scriptUrl, payload);
-      try {
-        res.status(200).json(JSON.parse(out));
-      } catch {
-        res.status(200).json({ status: 'ok' });
-      }
+      // Update individual step or batch provider statuses
+      const actionName = (req.body && req.body.action) || 'update_step';
+      const payload = { action: actionName, ...(req.body || {}) };
+      const out = await postRequest(scriptUrl, payload, true);
+      res.status(200).json(extractJson(out) || { status: 'ok' });
     } else if (req.method === 'DELETE') {
-      const { plan_id } = req.body || req.query || {};
-      const payload = { action: 'cancel_plan', plan_id: plan_id };
-      const out = await postGoogle(scriptUrl, payload);
-      try {
-        res.status(200).json(JSON.parse(out));
-      } catch {
-        res.status(200).json({ status: 'ok' });
-      }
+      const { plan_id, action } = req.body || req.query || {};
+      const payload = { action: action === 'remove_plan' ? 'remove_plan' : 'cancel_plan', plan_id: plan_id };
+      const out = await postRequest(scriptUrl, payload, true);
+      res.status(200).json(extractJson(out) || { status: 'ok' });
     } else {
       res.status(405).json({ error: 'Method not allowed' });
     }

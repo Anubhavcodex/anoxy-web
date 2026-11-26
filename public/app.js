@@ -8,6 +8,7 @@
 
   // --- CONSTANTS (Matching desktop anoxy_schedular.py lines 266-270) ---
   const UNITS = { s: 1 / 60, m: 1, h: 60, d: 1440 };
+  const FINAL_STATUSES = new Set(['completed', 'canceled', 'cancelled', 'partial', 'refunded', 'fail', 'failed']);
 
   // --- STATE ---
   const state = {
@@ -20,6 +21,9 @@
     activePreset: '10k',
     plans: [],
     steps: [],
+    providerStatuses: {}, // { [order_id]: 'In progress' | 'Completed' | ... }
+    isDispatching: false,
+    isPollingStatus: false,
     selectedPlanId: null,
     selectedStepId: null
   };
@@ -445,6 +449,10 @@
         state.currency = localStorage.getItem('anoxy_cached_currency') || 'USD';
         renderServicesTable();
       }
+      const cachedStatuses = localStorage.getItem('anoxy_provider_statuses');
+      if (cachedStatuses) {
+        state.providerStatuses = JSON.parse(cachedStatuses);
+      }
     } catch (e) {}
     initAuth();
     initTabs();
@@ -454,26 +462,47 @@
     initPlans();
     initModals();
 
-    // Live background runner while the web app tab is open (exact desktop tick() parity)
-    setInterval(() => {
-      const scriptUrl = localStorage.getItem('anoxy_script_url') || '';
-      const qs = scriptUrl ? `?script_url=${encodeURIComponent(scriptUrl)}` : '';
-      fetch('/api/cron' + qs)
-        .then(r => r.json())
-        .then(d => {
-          if (d && d.dispatched && d.dispatched > 0) {
-            log(`Cloud Engine auto-dispatched ${d.dispatched} due drop(s) to provider.`);
-            refreshPlans();
-          }
-        })
-        .catch(() => {});
+    // 1-second local due check (exact desktop worker() parity) — dispatches the INSTANT run_at <= now
+    setInterval(async () => {
+      const url = localStorage.getItem('anoxy_panel_url');
+      const key = localStorage.getItem('anoxy_panel_key');
+      if (!url || !key || !state.steps.length || state.isDispatching) return;
 
-      // Auto-refresh the Plans table every 5s if user is currently viewing the Plans tab (desktop parity lines 2435-2438)
-      const plansTab = el('tab-plans');
-      if (plansTab && plansTab.classList.contains('active')) {
-        refreshPlans();
+      const now = Date.now();
+      const dueNow = state.steps.filter(s => s.status === 'pending' && Number(s.run_at) <= now);
+      if (dueNow.length > 0) {
+        state.isDispatching = true;
+        try {
+          dueNow.forEach(s => { s.status = 'sending'; });
+          if (el('tab-plans') && el('tab-plans').classList.contains('active') && state.selectedPlanId) {
+            renderStepsTable(state.selectedPlanId);
+          }
+          await triggerCloudCronDispatch();
+        } finally {
+          state.isDispatching = false;
+        }
       }
-    }, 5000);
+    }, 1000);
+
+    // 15-second background sync + live provider status poller ('In progress' -> 'Completed')
+    setInterval(async () => {
+      const url = localStorage.getItem('anoxy_panel_url');
+      const key = localStorage.getItem('anoxy_panel_key');
+      if (!url || !key) return;
+
+      const plansTab = el('tab-plans');
+      const plansActive = plansTab && plansTab.classList.contains('active');
+      const hasActiveWork = state.steps.some(s =>
+        s.status === 'pending' || s.status === 'sending' ||
+        (s.status === 'sent' && !FINAL_STATUSES.has((getStepProviderStatus(s) || '').toLowerCase()))
+      );
+
+      if (plansActive) {
+        await refreshPlans(true);
+      } else if (hasActiveWork) {
+        await refreshPlans(false);
+      }
+    }, 15000);
   });
 
   // --- AUTH ---
@@ -552,10 +581,10 @@
     });
   }
 
-  function switchTab(name) {
+  function switchTab(name, shouldRefresh = true) {
     document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
     document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === `tab-${name}`));
-    if (name === 'plans') refreshPlans();
+    if (name === 'plans' && shouldRefresh) refreshPlans(true);
   }
 
   // --- TAB 1: SETUP ---
@@ -688,6 +717,7 @@
         if (el('comp-rate') && !el('comp-rate').value) el('comp-rate').value = cs.rate;
       }
       updateAutoStats();
+      refreshPlans(true);
     } catch (err) {
       el('setup-status').textContent = 'Connection failed: ' + err.message;
       el('setup-status').style.color = 'var(--danger)';
@@ -1920,14 +1950,16 @@
       }
     });
 
-    await savePlanToCloud(`Auto ${state.activePreset.toUpperCase()} Plan (${steps.length} drops)`, sid, link, steps);
-    state.scheduleRuns = [];
-    state.companionLikes = {};
-    renderAutoTable();
-    updateAutoStats();
+    const started = await savePlanToCloud(`Auto ${state.activePreset.toUpperCase()} Plan (${steps.length} drops)`, sid, link, steps);
+    if (started) {
+      state.scheduleRuns = [];
+      state.companionLikes = {};
+      renderAutoTable();
+      updateAutoStats();
+    }
   }
 
-  // --- SAVE PLAN TO 24/7 CLOUD ---
+  // --- SAVE PLAN TO 24/7 CLOUD (Immediately dispatches due-now steps just like EXE) ---
   async function savePlanToCloud(name, sid, link, steps) {
     const url = localStorage.getItem('anoxy_panel_url');
     const key = localStorage.getItem('anoxy_panel_key');
@@ -1936,7 +1968,14 @@
     if (!url || !key) {
       alert('Please configure Panel API credentials in Setup first.');
       switchTab('setup');
-      return;
+      return false;
+    }
+
+    const startBtn = el('btn-auto-start');
+    const origBtnTxt = startBtn ? startBtn.textContent : '';
+    if (startBtn) {
+      startBtn.disabled = true;
+      startBtn.textContent = '⏳ Starting & sending...';
     }
 
     try {
@@ -1955,17 +1994,46 @@
       });
       const data = await res.json();
       if (data.status === 'ok' || data.plan_id) {
+        if (data.plan) {
+          state.plans = [data.plan, ...state.plans.filter(p => String(p.id) !== String(data.plan.id))];
+        }
+        if (Array.isArray(data.steps) && data.steps.length) {
+          data.steps.forEach(s => {
+            if (s.order_id && s.provider_status) {
+              cacheProviderStatus(s.order_id, s.provider_status);
+            }
+          });
+          state.steps = [...state.steps.filter(s => String(s.plan_id) !== String(data.plan_id)), ...data.steps];
+          state.steps.sort((a, b) => (Number(a.run_at) - Number(b.run_at)) || (Number(a.step_no) - Number(b.step_no)));
+        }
+        state.selectedPlanId = data.plan_id;
+
+        const sentNow = (data.steps || []).filter(s => s.status === 'sent');
+        if (sentNow.length) {
+          sentNow.forEach(s => log(`Plan ${data.plan_id} step ${s.step_no}: sent ${s.quantity} (order ${s.order_id})`));
+        }
         log(`Plan started with ${steps.length} scheduled step(s) in 24/7 Cloud.`);
-        fetch('/api/cron' + (scriptUrl ? `?script_url=${encodeURIComponent(scriptUrl)}` : '')).catch(() => {});
-        alert('Plan started successfully in 24/7 Cloud!\n\nYour first drop is being dispatched to your provider right now.\n\nYou can now turn off your PC. Cloud will execute all subsequent drops automatically.');
-        switchTab('plans');
+
+        renderPlansTable();
+        switchTab('plans', false);
+        setTimeout(() => pollProviderStatuses(), 1200);
+        setTimeout(() => pollProviderStatuses(), 5000);
+        return true;
       } else if (data.message && data.message.includes('Missing username or password')) {
         alert("Google Sheet Apps Script Update Required:\n\nYour Google Sheet currently has the old login-only script.\n\nTo enable 24/7 Cloud Plans:\n1. Open your Google Sheet → Extensions → Apps Script\n2. Replace all code by pasting 'google_apps_script.js'\n3. Click Deploy → Manage deployments → Edit (pencil icon)\n4. Select Version: 'New version' and click Deploy.");
+        return false;
       } else {
         alert('Plan response: ' + (data.message || JSON.stringify(data)));
+        return false;
       }
     } catch (err) {
       alert('Error dispatching plan to cloud: ' + err.message);
+      return false;
+    } finally {
+      if (startBtn) {
+        startBtn.disabled = false;
+        startBtn.textContent = origBtnTxt;
+      }
     }
   }
 
@@ -2355,11 +2423,34 @@
   }
 
   // ================================================================
-  //  TAB 4: MY PLANS & STEP ACTIONS (Exact desktop lines 2269-2276)
+  //  TAB 4: MY PLANS & STEP ACTIONS (Exact desktop lines 2240-2589 + live status poll)
   // ================================================================
+  function cacheProviderStatus(orderId, statusStr) {
+    if (!orderId || !statusStr) return;
+    const key = String(orderId).trim();
+    state.providerStatuses[key] = String(statusStr);
+    try {
+      localStorage.setItem('anoxy_provider_statuses', JSON.stringify(state.providerStatuses));
+    } catch (e) {}
+  }
+
+  function getStepProviderStatus(step) {
+    if (!step) return '';
+    if (step.provider_status) return String(step.provider_status);
+    const oid = step.order_id !== undefined && step.order_id !== null ? String(step.order_id).trim() : '';
+    if (oid && state.providerStatuses[oid]) return state.providerStatuses[oid];
+    return '';
+  }
+
   function initPlans() {
-    el('btn-plan-refresh').addEventListener('click', refreshPlans);
+    el('btn-plan-refresh').addEventListener('click', async () => {
+      await triggerCloudCronDispatch();
+      await refreshPlans(true);
+    });
     el('btn-plan-cancel').addEventListener('click', cancelSelectedPlan);
+    if (el('btn-plan-remove')) {
+      el('btn-plan-remove').addEventListener('click', removeSelectedPlan);
+    }
 
     // Step actions: Change quantity (line 2269)
     el('btn-step-qty').addEventListener('click', () => {
@@ -2385,7 +2476,7 @@
       const step = getSelectedStep();
       if (!step) { alert("Select a pending step first."); return; }
       if (step.status !== 'pending') { alert("Only a 'pending' step can be moved."); return; }
-      const ans = prompt("Run this step in how many minutes from now (e.g. 5m, 1h, 30m):", "10m");
+      const ans = prompt("Run this step in how many minutes from now (e.g. 0m, 5m, 1h, 30m):", "30m");
       if (ans === null) return;
       try {
         const mins = parseDuration(ans.trim());
@@ -2401,7 +2492,7 @@
       const step = getSelectedStep();
       if (!step) { alert("Select a pending step first."); return; }
       if (step.status !== 'pending') { alert("Only pending steps can be shifted."); return; }
-      const ans = prompt("Shift this step and all later pending steps by how much (e.g. 15m, 1h, -10m):", "15m");
+      const ans = prompt("Shift this step and all later pending steps by how much (e.g. 15m, 1h, -10m):", "30m");
       if (ans === null) return;
       try {
         let mins;
@@ -2416,6 +2507,57 @@
       }
     });
 
+    // Step actions: Add step (line 2272)
+    if (el('btn-step-add')) {
+      el('btn-step-add').addEventListener('click', async () => {
+        if (!state.selectedPlanId) { alert("Select a plan above first."); return; }
+        const plan = state.plans.find(p => String(p.id) === String(state.selectedPlanId));
+        if (!plan) return;
+        const sid = parseInt(plan.service_id);
+        const s = state.services[sid];
+        const minVal = (s && s.min) ? s.min : 1;
+        const maxVal = (s && s.max) ? s.max : 1e9;
+
+        const qTxt = prompt(`Quantity for the new step (min ${minVal}, max ${maxVal}):`, minVal);
+        if (qTxt === null) return;
+        const q = parseInt(qTxt.trim());
+        if (isNaN(q) || q < minVal || q > maxVal) {
+          alert(`Quantity must be between ${minVal} and ${maxVal}.`);
+          return;
+        }
+        const tTxt = prompt("Run it how long from now? (e.g. 2h, 30m, 0m):", "1h");
+        if (tTxt === null) return;
+        let mins;
+        try {
+          mins = parseDuration(tTxt.trim());
+        } catch (e) {
+          alert(e.message);
+          return;
+        }
+
+        const scriptUrl = localStorage.getItem('anoxy_script_url') || '';
+        try {
+          await fetch('/api/plans', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              action: 'add_step',
+              plan_id: plan.id,
+              service_id: sid,
+              link: plan.link,
+              quantity: q,
+              run_at: Date.now() + mins * 60000,
+              script_url: scriptUrl
+            })
+          });
+          log(`Added step (${q}) to plan ${plan.id}.`);
+          await refreshPlans(false);
+        } catch (err) {
+          alert("Error adding step: " + err.message);
+        }
+      });
+    }
+
     // Step actions: Delete step (line 2274)
     el('btn-step-del').addEventListener('click', () => {
       const step = getSelectedStep();
@@ -2428,70 +2570,206 @@
 
   function getSelectedStep() {
     if (!state.selectedStepId) return null;
-    return state.steps.find(s => s.id === state.selectedStepId || String(s.step_no) === String(state.selectedStepId));
+    return state.steps.find(s => String(s.id) === String(state.selectedStepId) || String(s.step_no) === String(state.selectedStepId));
   }
 
   async function updateCloudStep(stepId, fields) {
+    const scriptUrl = localStorage.getItem('anoxy_script_url') || '';
     try {
       await fetch('/api/plans', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ step_id: stepId, ...fields })
+        body: JSON.stringify({ step_id: stepId, script_url: scriptUrl, ...fields })
       });
       log(`Step updated in 24/7 Cloud.`);
-      refreshPlans();
+      await refreshPlans(false);
     } catch (err) {
       alert("Error updating step: " + err.message);
     }
   }
 
   async function shiftLaterSteps(baseStep, deltaMs) {
-    const planSteps = state.steps.filter(s => s.plan_id === baseStep.plan_id && s.status === 'pending');
-    const toShift = planSteps.filter(s => s.step_no >= baseStep.step_no);
+    const scriptUrl = localStorage.getItem('anoxy_script_url') || '';
+    const planSteps = state.steps.filter(s => String(s.plan_id) === String(baseStep.plan_id) && s.status === 'pending');
+    const toShift = planSteps.filter(s => Number(s.step_no) >= Number(baseStep.step_no));
     for (const s of toShift) {
       await fetch('/api/plans', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ step_id: s.id, run_at: s.run_at + deltaMs })
+        body: JSON.stringify({ step_id: s.id, run_at: Number(s.run_at) + deltaMs, script_url: scriptUrl })
       });
     }
     log(`Shifted ${toShift.length} step(s) in cloud.`);
-    refreshPlans();
+    await refreshPlans(false);
   }
 
-  async function refreshPlans() {
+  async function triggerCloudCronDispatch() {
+    try {
+      const scriptUrl = localStorage.getItem('anoxy_script_url') || '';
+      const qs = scriptUrl ? `?script_url=${encodeURIComponent(scriptUrl)}` : '';
+      const res = await fetch('/api/cron' + qs);
+      const d = await res.json();
+      if (d && Array.isArray(d.results) && d.results.length > 0) {
+        d.results.forEach(r => {
+          const target = state.steps.find(s => String(s.id) === String(r.step_id));
+          if (target) {
+            if (r.status) target.status = r.status;
+            if (r.order) {
+              target.order_id = r.order;
+              if (r.provider_status) {
+                target.provider_status = r.provider_status;
+                cacheProviderStatus(r.order, r.provider_status);
+              }
+            }
+            if (r.run_at) target.run_at = r.run_at;
+            if (r.error !== undefined) target.error = r.error;
+          }
+          if (r.success) {
+            log(`Dispatched step ${r.step_id}: sent (order #${r.order}${r.provider_status ? ', ' + r.provider_status : ''}).`);
+          } else if (r.error) {
+            log(`Step ${r.step_id}: ${r.error}`);
+          }
+        });
+        renderPlansTable();
+        setTimeout(() => pollProviderStatuses(), 1200);
+      } else {
+        await refreshPlans(false);
+      }
+    } catch (err) {
+      log('Dispatch check error: ' + err.message);
+    }
+  }
+
+  async function pollProviderStatuses() {
+    if (state.isPollingStatus) return;
+    const url = localStorage.getItem('anoxy_panel_url');
+    const key = localStorage.getItem('anoxy_panel_key');
+    if (!url || !key) return;
+
+    const sentSteps = state.steps.filter(s => {
+      if (s.status !== 'sent') return false;
+      const oid = s.order_id !== undefined && s.order_id !== null ? String(s.order_id).trim() : '';
+      if (!/^\d+$/.test(oid)) return false;
+      const cur = (getStepProviderStatus(s) || '').toLowerCase().trim();
+      return !FINAL_STATUSES.has(cur);
+    });
+
+    if (!sentSteps.length) return;
+
+    // Unique order IDs (up to 30, matching desktop poll_status)
+    const uniqueOrders = [...new Set(sentSteps.map(s => String(s.order_id).trim()))].slice(0, 30);
+    state.isPollingStatus = true;
+
+    try {
+      const sheetUpdates = [];
+      let uiChanged = false;
+
+      // Poll in small chunks of 5 parallel requests
+      for (let i = 0; i < uniqueOrders.length; i += 5) {
+        const chunk = uniqueOrders.slice(i, i + 5);
+        await Promise.all(chunk.map(async oid => {
+          try {
+            const res = await fetch('/api/panel', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ action: 'status', order: oid, api_url: url, api_key: key })
+            });
+            const data = await res.json();
+            if (data && data.status) {
+              const newStatus = String(data.status);
+              const prev = state.providerStatuses[oid] || '';
+              if (newStatus !== prev) {
+                cacheProviderStatus(oid, newStatus);
+                uiChanged = true;
+              }
+              state.steps.forEach(s => {
+                if (String(s.order_id).trim() === oid && s.provider_status !== newStatus) {
+                  s.provider_status = newStatus;
+                  sheetUpdates.push({ step_id: s.id, provider_status: newStatus });
+                  uiChanged = true;
+                }
+              });
+            }
+          } catch (e) {}
+        }));
+      }
+
+      if (uiChanged && el('tab-plans') && el('tab-plans').classList.contains('active')) {
+        renderStepsTable(state.selectedPlanId);
+      }
+
+      if (sheetUpdates.length > 0) {
+        const scriptUrl = localStorage.getItem('anoxy_script_url') || '';
+        fetch('/api/plans', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'update_statuses', updates: sheetUpdates, script_url: scriptUrl })
+        }).catch(() => {});
+      }
+    } finally {
+      state.isPollingStatus = false;
+    }
+  }
+
+  async function refreshPlans(alsoPollStatus = true) {
     try {
       const scriptUrl = localStorage.getItem('anoxy_script_url') || '';
       const qs = scriptUrl ? `?script_url=${encodeURIComponent(scriptUrl)}` : '';
       const res = await fetch('/api/plans' + qs);
       const data = await res.json();
       state.plans = data.plans || [];
-      state.steps = data.steps || [];
+      state.steps = (data.steps || []).map(s => {
+        const oid = s.order_id !== undefined && s.order_id !== null ? String(s.order_id).trim() : '';
+        if (!s.provider_status && oid && state.providerStatuses[oid]) {
+          s.provider_status = state.providerStatuses[oid];
+        } else if (s.provider_status && oid) {
+          cacheProviderStatus(oid, s.provider_status);
+        }
+        return s;
+      });
       renderPlansTable();
+      if (alsoPollStatus) {
+        pollProviderStatuses();
+      }
     } catch (err) {
       log('Error syncing plans: ' + err.message);
     }
   }
 
+  function formatExeDateTime(tsMs) {
+    const dt = new Date(Number(tsMs));
+    if (isNaN(dt.getTime())) return '–';
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const p = n => String(n).padStart(2, '0');
+    return `${p(dt.getDate())} ${months[dt.getMonth()]} ${p(dt.getHours())}:${p(dt.getMinutes())}:${p(dt.getSeconds())}`;
+  }
+
   function renderPlansTable() {
     const tbody = el('plans-tree-body');
     if (!state.plans.length) {
+      state.selectedPlanId = null;
       tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; padding: 25px; color: var(--muted);">No plans scheduled yet.</td></tr>';
       el('steps-tree-body').innerHTML = '<tr><td colspan="8" style="text-align: center; padding: 40px; color: var(--muted);">Select a plan above.</td></tr>';
       return;
     }
 
+    const exists = state.selectedPlanId && state.plans.some(p => String(p.id) === String(state.selectedPlanId));
+    if (!exists) {
+      state.selectedPlanId = state.plans[0].id;
+    }
+
     let html = '';
     state.plans.forEach(p => {
-      const pSteps = state.steps.filter(s => s.plan_id === p.id);
+      const pSteps = state.steps.filter(s => String(s.plan_id) === String(p.id));
       const pending = pSteps.filter(s => s.status === 'pending').length;
       const sent = pSteps.filter(s => s.status === 'sent').length;
       const totalQty = pSteps.reduce((acc, s) => acc + (parseInt(s.quantity) || 0), 0);
       const nextStep = pSteps.find(s => s.status === 'pending');
-      const nextStr = nextStep ? new Date(nextStep.run_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Done';
+      const nextStr = nextStep ? formatExeDateTime(nextStep.run_at) : '-';
+      const isSel = String(state.selectedPlanId) === String(p.id);
 
       html += `
-        <tr data-pid="${p.id}" class="plan-row ${state.selectedPlanId === p.id ? 'selected' : ''}" style="cursor: pointer;">
+        <tr data-pid="${p.id}" class="plan-row ${isSel ? 'selected' : ''}" style="cursor: pointer;">
           <td style="font-weight: 700;">${p.name || p.id}</td>
           <td style="max-width: 200px; overflow: hidden; text-overflow: ellipsis;">${p.link}</td>
           <td>${p.service_id}</td>
@@ -2515,14 +2793,13 @@
       });
     });
 
-    if (state.plans.length && !state.selectedPlanId) {
-      tbody.querySelector('.plan-row').click();
-    }
+    // Always keep bottom steps table synchronized with selected plan (exact desktop tick parity!)
+    renderStepsTable(state.selectedPlanId);
   }
 
   function renderStepsTable(planId) {
     const tbody = el('steps-tree-body');
-    const pSteps = state.steps.filter(s => s.plan_id === planId);
+    const pSteps = state.steps.filter(s => String(s.plan_id) === String(planId));
 
     if (!pSteps.length) {
       tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; padding: 40px; color: var(--muted);">No steps in this plan.</td></tr>';
@@ -2531,27 +2808,34 @@
 
     let html = '';
     pSteps.forEach(s => {
-      const whenStr = new Date(s.run_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      const whenStr = formatExeDateTime(s.run_at);
       let statusColor = 'var(--muted)';
       if (s.status === 'sent') statusColor = 'var(--success)';
       else if (s.status === 'pending') statusColor = 'var(--warning)';
       else if (s.status === 'sending') statusColor = 'var(--accent)';
       else if (s.status === 'failed') statusColor = 'var(--danger)';
+      else if (s.status === 'unknown') statusColor = '#9b59b6';
 
       const svc = state.services[s.service_id];
-      const svcTxt = svc ? `#${s.service_id} (${svc.name.substring(0, 14)}…)` : `#${s.service_id}`;
+      const svcTxt = svc ? `#${s.service_id} (${svc.name.substring(0, 14)}...)` : `#${s.service_id}`;
       const sid = s.id || s.step_no;
 
+      const rawOrder = s.order_id !== undefined && s.order_id !== null ? String(s.order_id).trim() : '';
+      const isValidOrder = /^\d+$/.test(rawOrder);
+      const orderCell = isValidOrder ? rawOrder : (s.status === 'sent' && rawOrder ? rawOrder : '');
+      const provStatus = s.status === 'sent' ? (getStepProviderStatus(s) || 'Checking...') : '';
+      const noteCell = s.error || (!isValidOrder && rawOrder && s.status !== 'sent' ? rawOrder : '');
+
       html += `
-        <tr data-stepid="${sid}" class="step-row ${state.selectedStepId === sid ? 'selected' : ''}" style="cursor: pointer;">
+        <tr data-stepid="${sid}" class="step-row ${String(state.selectedStepId) === String(sid) ? 'selected' : ''}" style="cursor: pointer; color: ${statusColor};">
           <td>${s.step_no}</td>
           <td>${svcTxt}</td>
-          <td style="font-weight: 700;">${s.quantity}</td>
+          <td style="font-weight: 600;">${s.quantity}</td>
           <td>${whenStr}</td>
-          <td style="color: ${statusColor}; font-weight: 700;">${s.status}</td>
-          <td>Panel API</td>
-          <td>${s.order_id || '–'}</td>
-          <td style="color: var(--muted);">${s.error || (s.status === 'sent' ? 'Order dispatched' : '')}</td>
+          <td style="font-weight: 700;">${s.status}</td>
+          <td>${provStatus}</td>
+          <td>${orderCell}</td>
+          <td>${noteCell}</td>
         </tr>
       `;
     });
@@ -2574,16 +2858,41 @@
     }
     if (!confirm('Cancel all pending steps of this plan?\nSteps already sent to the panel cannot be recalled from here.')) return;
 
+    const scriptUrl = localStorage.getItem('anoxy_script_url') || '';
     try {
       await fetch('/api/plans', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ plan_id: state.selectedPlanId })
+        body: JSON.stringify({ action: 'cancel_plan', plan_id: state.selectedPlanId, script_url: scriptUrl })
       });
       log(`Plan ${state.selectedPlanId} cancelled.`);
-      refreshPlans();
+      await refreshPlans(false);
     } catch (err) {
       alert('Failed to cancel plan: ' + err.message);
+    }
+  }
+
+  async function removeSelectedPlan() {
+    if (!state.selectedPlanId) {
+      alert('Select a plan first.');
+      return;
+    }
+    const busy = state.steps.some(s => String(s.plan_id) === String(state.selectedPlanId) && (s.status === 'pending' || s.status === 'sending'));
+    if (busy) {
+      alert('Still active: Cancel the plan first, or wait until it finishes.');
+      return;
+    }
+    const scriptUrl = localStorage.getItem('anoxy_script_url') || '';
+    try {
+      await fetch('/api/plans', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'remove_plan', plan_id: state.selectedPlanId, script_url: scriptUrl })
+      });
+      state.selectedPlanId = null;
+      await refreshPlans(false);
+    } catch (err) {
+      alert('Failed to remove plan: ' + err.message);
     }
   }
 

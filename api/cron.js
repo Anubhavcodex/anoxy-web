@@ -68,22 +68,107 @@ function postRequest(url, data, isJson = true, redirectCount = 0) {
   });
 }
 
+function extractJson(raw) {
+  if (!raw) return null;
+  const str = String(raw).trim().replace(/^\uFEFF/, '');
+  try {
+    return JSON.parse(str);
+  } catch {
+    const firstBrace = str.indexOf('{');
+    const firstBracket = str.indexOf('[');
+    let start = -1;
+    let end = -1;
+    if (firstBrace !== -1 && (firstBracket === -1 || firstBrace < firstBracket)) {
+      start = firstBrace;
+      end = str.lastIndexOf('}');
+    } else if (firstBracket !== -1) {
+      start = firstBracket;
+      end = str.lastIndexOf(']');
+    }
+    if (start !== -1 && end > start) {
+      try {
+        return JSON.parse(str.substring(start, end + 1));
+      } catch {}
+    }
+    return null;
+  }
+}
+
+async function pollPanelOrderStatus({ api_url, api_key, order_id }) {
+  if (!api_url || !api_key || !order_id) return '';
+  try {
+    const payload = new URLSearchParams();
+    payload.append('key', api_key);
+    payload.append('action', 'status');
+    payload.append('order', String(order_id));
+    const resp = await postRequest(api_url, payload, false);
+    const parsed = extractJson(resp);
+    if (parsed && parsed.status) {
+      return String(parsed.status);
+    }
+  } catch {}
+  return '';
+}
+
+async function placePanelOrder({ api_url, api_key, service_id, link, quantity }) {
+  const payload = new URLSearchParams();
+  payload.append('key', api_key);
+  payload.append('action', 'add');
+  payload.append('service', service_id);
+  payload.append('link', link);
+  payload.append('quantity', quantity);
+
+  const panelResp = await postRequest(api_url, payload, false);
+  let orderId = null;
+  let isSuccess = false;
+  let errorMsg = '';
+
+  const pData = extractJson(panelResp);
+  if (pData && pData.order) {
+    orderId = pData.order;
+    isSuccess = true;
+  } else {
+    errorMsg = (pData && pData.error) ? String(pData.error) : String(panelResp || '').substring(0, 140);
+    const dupMatch = errorMsg.match(/order\s*#?(\d+)/i);
+    if (dupMatch) {
+      orderId = dupMatch[1];
+      isSuccess = true;
+      errorMsg = '';
+    }
+  }
+
+  let newStatus = isSuccess ? 'sent' : 'failed';
+  let nextRunAt = null;
+  let providerStatus = '';
+
+  if (isSuccess && orderId) {
+    providerStatus = await pollPanelOrderStatus({ api_url, api_key, order_id: orderId });
+  } else if (errorMsg) {
+    const low = errorMsg.toLowerCase();
+    if (low.includes('wait') || low.includes('in progress') || low.includes('duplicate')) {
+      newStatus = 'pending';
+      nextRunAt = Date.now() + 120000;
+      errorMsg = 'Retrying in 2m: ' + errorMsg;
+    }
+  }
+
+  return { isSuccess, status: newStatus, orderId, providerStatus, errorMsg, nextRunAt };
+}
+
 async function dispatchDueSteps(targetScriptUrl) {
   const now = Date.now();
   const scriptUrl = targetScriptUrl || process.env.GOOGLE_SCRIPT_URL || DEFAULT_SCRIPT_URL;
 
-  // 1. Ask Google Apps Script for due steps (status == 'pending' AND run_at <= now)
+  // 1. Ask Google Apps Script for due steps (atomically claimed inside ScriptLock when updated script is deployed)
   const rawDue = await postRequest(scriptUrl, { action: 'get_due_steps', now: now }, true);
   let dueSteps = [];
-  try {
-    const parsed = JSON.parse(rawDue);
-    dueSteps = parsed.steps || [];
-  } catch {
-    dueSteps = [];
+  const parsed = extractJson(rawDue);
+  if (parsed && Array.isArray(parsed.steps)) {
+    dueSteps = parsed.steps;
   }
 
   if (!dueSteps.length) {
-    return { status: 'ok', dispatched: 0, message: 'No steps due' };
+    return { status: 'ok', dispatched: 0, message: 'No steps due', results: [] };
   }
 
   const results = [];
@@ -93,69 +178,39 @@ async function dispatchDueSteps(targetScriptUrl) {
     const { step_id, api_url, api_key, service_id, link, quantity } = step;
 
     try {
-      const payload = new URLSearchParams();
-      payload.append('key', api_key);
-      payload.append('action', 'add');
-      payload.append('service', service_id);
-      payload.append('link', link);
-      payload.append('quantity', quantity);
-
-      const panelResp = await postRequest(api_url, payload, false);
-      let orderId = null;
-      let isSuccess = false;
-      let errorMsg = '';
-
-      try {
-        const pData = JSON.parse(panelResp);
-        if (pData.order) {
-          orderId = pData.order;
-          isSuccess = true;
-        } else if (pData.error) {
-          errorMsg = pData.error;
-          const dupMatch = errorMsg.match(/order\s*#?(\d+)/i);
-          if (dupMatch) {
-            orderId = dupMatch[1];
-            isSuccess = true;
-            errorMsg = '';
-          }
-        }
-      } catch {
-        errorMsg = panelResp.substring(0, 100);
-        const dupMatch = errorMsg.match(/order\s*#?(\d+)/i);
-        if (dupMatch) {
-          orderId = dupMatch[1];
-          isSuccess = true;
-          errorMsg = '';
-        }
-      }
-
-      let newStatus = isSuccess ? 'sent' : 'failed';
-      let nextRunAt = null;
-
-      if (!isSuccess && errorMsg && (errorMsg.toLowerCase().includes('wait') || errorMsg.toLowerCase().includes('in progress') || errorMsg.toLowerCase().includes('duplicate'))) {
-        newStatus = 'pending';
-        nextRunAt = Date.now() + 120000; // Postpone 2m and retry automatically when provider finishes previous order
-      }
+      const outcome = await placePanelOrder({ api_url, api_key, service_id, link, quantity });
 
       // 3. Report result back to Google Sheet
       await postRequest(scriptUrl, {
         action: 'update_step',
         step_id: step_id,
-        status: newStatus,
-        order_id: orderId || '',
-        error: errorMsg || '',
-        ...(nextRunAt ? { run_at: nextRunAt } : {})
+        status: outcome.status,
+        order_id: outcome.orderId || '',
+        provider_status: outcome.providerStatus || '',
+        error: outcome.errorMsg || '',
+        ...(outcome.nextRunAt ? { run_at: outcome.nextRunAt } : {})
       }, true);
 
-      results.push({ step_id, success: isSuccess, order: orderId, error: errorMsg });
+      results.push({
+        step_id,
+        status: outcome.status,
+        success: outcome.isSuccess,
+        order: outcome.orderId,
+        provider_status: outcome.providerStatus,
+        run_at: outcome.nextRunAt,
+        error: outcome.errorMsg
+      });
     } catch (stepErr) {
+      const isTimeout = stepErr.message && stepErr.message.toLowerCase().includes('timeout');
+      const errStatus = isTimeout ? 'unknown' : 'failed';
+      const errText = isTimeout ? 'No clear reply from panel. Check panel orders.' : stepErr.message;
       await postRequest(scriptUrl, {
         action: 'update_step',
         step_id: step_id,
-        status: 'failed',
-        error: stepErr.message
+        status: errStatus,
+        error: errText
       }, true);
-      results.push({ step_id, success: false, error: stepErr.message });
+      results.push({ step_id, status: errStatus, success: false, error: errText });
     }
   }
 
@@ -170,6 +225,7 @@ async function dispatchDueSteps(targetScriptUrl) {
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   const scriptUrl = (req.query && (req.query.script_url || req.query.scriptUrl)) ||
+                    (req.body && (req.body.script_url || req.body.scriptUrl)) ||
                     process.env.GOOGLE_SCRIPT_URL ||
                     DEFAULT_SCRIPT_URL;
 
@@ -182,3 +238,7 @@ module.exports = async (req, res) => {
 };
 
 module.exports.dispatchDueSteps = dispatchDueSteps;
+module.exports.placePanelOrder = placePanelOrder;
+module.exports.pollPanelOrderStatus = pollPanelOrderStatus;
+module.exports.postRequest = postRequest;
+module.exports.extractJson = extractJson;
