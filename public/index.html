@@ -358,11 +358,13 @@
 
             <!-- BOTTOM ACTIONS (EXACT APPLICATION BAR WITH TOTAL INR) -->
             <div style="margin-top: 10px; display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap;">
-              <div style="display: flex; gap: 6px;">
+              <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
                 <button id="btn-auto-add" class="btn-small" style="padding: 6px 12px; font-weight: 600;">+ Add custom run</button>
                 <button id="btn-auto-regenerate" class="btn-small" style="padding: 6px 12px; font-weight: 600;">Regenerate</button>
+                <button id="btn-toggle-cost-details" type="button" class="btn-small" style="padding: 6px 10px; font-weight: 600;">Per-service price ▾</button>
               </div>
-              <div style="display: flex; align-items: center; gap: 14px;">
+              <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: flex-end; margin-left: auto;">
+                <div id="cost-breakdown-box" style="display: none; flex-wrap: wrap; gap: 5px; justify-content: flex-end; max-width: 520px;"></div>
                 <div style="text-align: right; line-height: 1.25;">
                   <div style="font-size: 10px; font-weight: 700; color: var(--muted); text-transform: uppercase;">Total Plan Cost</div>
                   <div id="btn-start-cost" style="font-size: 13px; font-weight: 700; color: var(--text);">–</div>

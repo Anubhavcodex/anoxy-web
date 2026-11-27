@@ -1529,6 +1529,18 @@
         }
       });
     }
+    const toggleCostBtn = el('btn-toggle-cost-details');
+    if (toggleCostBtn) {
+      const isShown = localStorage.getItem('anoxy_show_cost_breakdown') !== '0';
+      toggleCostBtn.textContent = isShown ? 'Per-service price ▾' : 'Per-service price ▸';
+      toggleCostBtn.addEventListener('click', () => {
+        const cur = localStorage.getItem('anoxy_show_cost_breakdown') !== '0';
+        const next = !cur;
+        localStorage.setItem('anoxy_show_cost_breakdown', next ? '1' : '0');
+        toggleCostBtn.textContent = next ? 'Per-service price ▾' : 'Per-service price ▸';
+        updateAutoStats();
+      });
+    }
     el('btn-auto-add').addEventListener('click', () => {
       COMPANION_TYPES.forEach(c => {
         const ids = getCompIds(c);
@@ -2165,10 +2177,27 @@
     return { totalViews, sid, svc, viewsRate, viewsCost, compBreakdown, totalPlanCost, hasAnyCost, curr, usdToInrRate, inrCost };
   }
 
+  function renderServiceCostBadge({ label, icon, bg, color, sid, qty, rate, cost, curr, usdToInrRate }) {
+    const isInr = curr === 'INR' || curr === '₹';
+    let priceHtml;
+    if (rate > 0) {
+      const itemInr = isInr ? cost : (cost * usdToInrRate);
+      priceHtml = isInr
+        ? `₹${cost.toFixed(2)}`
+        : `${cost.toFixed(4)} ${curr} <span style="opacity: 0.8;">(₹${itemInr.toFixed(2)})</span>`;
+    } else {
+      priceHtml = '<span style="color: var(--muted);">no rate</span>';
+    }
+    const sidTag = sid ? `#${sid}` : '';
+    const tip = `${label} ${sidTag} · ${qty.toLocaleString()} qty @ ${rate || 0}/1k`;
+    return `<span title="${tip}" style="display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 4px; background: ${bg}; color: ${color}; border: 1px solid rgba(15, 23, 42, 0.08); font-size: 11px; font-weight: 700; white-space: nowrap;">${icon} ${label}${sidTag ? ' ' + sidTag : ''} (${qty.toLocaleString()}): ${priceHtml}</span>`;
+  }
+
   function updateAutoStats() {
     const runs = state.scheduleRuns;
     const n = runs.length;
     el('stat-runs').textContent = n ? n : '–';
+    const breakdownBox = el('cost-breakdown-box');
 
     if (!n) {
       el('stat-gap').textContent = '–';
@@ -2177,11 +2206,15 @@
       el('stat-cost').textContent = '–';
       if (el('btn-start-cost')) el('btn-start-cost').textContent = '–';
       if (el('btn-start-inr')) el('btn-start-inr').textContent = '';
+      if (breakdownBox) {
+        breakdownBox.innerHTML = '';
+        breakdownBox.style.display = 'none';
+      }
       return;
     }
 
     const summary = computePlanCostSummary(true);
-    const { totalViews, viewsCost, compBreakdown, totalPlanCost, hasAnyCost, curr, usdToInrRate, inrCost } = summary;
+    const { totalViews, sid, viewsRate, viewsCost, compBreakdown, totalPlanCost, hasAnyCost, curr, usdToInrRate, inrCost } = summary;
 
     const lastD = runs[n - 1][0];
     const gaps = [];
@@ -2196,6 +2229,45 @@
     el('stat-total').textContent = activeTags.length
       ? `${totalViews.toLocaleString()} (${activeTags.join(' ')})`
       : totalViews.toLocaleString();
+
+    if (breakdownBox) {
+      const showBreakdown = localStorage.getItem('anoxy_show_cost_breakdown') !== '0';
+      if (showBreakdown) {
+        const itemsHtml = [
+          renderServiceCostBadge({
+            label: 'Views',
+            icon: '👁',
+            bg: '#eef2ff',
+            color: '#3b5bdb',
+            sid,
+            qty: totalViews,
+            rate: viewsRate,
+            cost: viewsCost,
+            curr,
+            usdToInrRate
+          })
+        ];
+        compBreakdown.filter(x => x.total > 0).forEach(x => {
+          itemsHtml.push(renderServiceCostBadge({
+            label: x.cfg.label,
+            icon: x.cfg.icon,
+            bg: x.cfg.badgeBg,
+            color: x.cfg.accent,
+            sid: x.sid,
+            qty: x.total,
+            rate: x.rate,
+            cost: x.cost,
+            curr,
+            usdToInrRate
+          }));
+        });
+        breakdownBox.innerHTML = itemsHtml.join('');
+        breakdownBox.style.display = 'flex';
+      } else {
+        breakdownBox.innerHTML = '';
+        breakdownBox.style.display = 'none';
+      }
+    }
 
     if (hasAnyCost) {
       let costText = '';
