@@ -350,10 +350,8 @@ body {
   color: var(--muted);
 }
 
-/* LIKES BADGE */
-.h-badge {
-  background: #fff0f3;
-  color: #e03131;
+/* COMPANION BADGES (Likes, Shares, Saves) */
+.h-badge, .s-badge, .v-badge {
   font-size: 10.5px;
   font-weight: 700;
   padding: 1px 6px;
@@ -361,6 +359,21 @@ body {
   cursor: pointer;
   display: inline-flex;
   align-items: center;
+}
+
+.h-badge {
+  background: #fff0f3;
+  color: #e03131;
+}
+
+.s-badge {
+  background: #e0f2fe;
+  color: #0284c7;
+}
+
+.v-badge {
+  background: #f3e8ff;
+  color: #7c3aed;
 }
 
 .h-add {

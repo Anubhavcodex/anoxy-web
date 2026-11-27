@@ -10,6 +10,89 @@
   const UNITS = { s: 1 / 60, m: 1, h: 60, d: 1440 };
   const FINAL_STATUSES = new Set(['completed', 'canceled', 'cancelled', 'partial', 'refunded', 'fail', 'failed']);
 
+  const COMPANION_TYPES = [
+    {
+      key: 'likes',
+      slotTitle: 'Pair 2nd service (ride-along Likes)',
+      desc: 'Drops likes at the exact same timestamp as views, once every 1h (customisable).',
+      label: 'Likes',
+      singular: 'like',
+      icon: '♥',
+      prefix: 'comp',
+      accent: 'var(--accent)',
+      badgeBg: '#eef2fe',
+      badgeClass: 'h-badge',
+      keywords: ['like'],
+      exclude: ['dislike'],
+      placeholderSid: 'e.g. 102'
+    },
+    {
+      key: 'shares',
+      slotTitle: 'Pair 3rd service (ride-along Shares)',
+      desc: 'Drops shares at the exact same timestamp as views, once every 1h (customisable).',
+      label: 'Shares',
+      singular: 'share',
+      icon: '↗',
+      prefix: 'share',
+      accent: '#0284c7',
+      badgeBg: '#e0f2fe',
+      badgeClass: 's-badge',
+      keywords: ['share', 'repost'],
+      exclude: [],
+      placeholderSid: 'e.g. 103'
+    },
+    {
+      key: 'saves',
+      slotTitle: 'Pair 4th service (ride-along Saves)',
+      desc: 'Drops saves at the exact same timestamp as views, once every 1h (customisable).',
+      label: 'Saves',
+      singular: 'save',
+      icon: '🔖',
+      prefix: 'save',
+      accent: '#7c3aed',
+      badgeBg: '#f3e8ff',
+      badgeClass: 'v-badge',
+      keywords: ['save', 'bookmark'],
+      exclude: [],
+      placeholderSid: 'e.g. 104'
+    }
+  ];
+
+  function getCompCfg(key) {
+    return COMPANION_TYPES.find(c => c.key === key) || COMPANION_TYPES[0];
+  }
+
+  function getCompIds(cfgOrKey) {
+    const c = typeof cfgOrKey === 'string' ? getCompCfg(cfgOrKey) : cfgOrKey;
+    const p = c.prefix;
+    return {
+      enabled: `${p}-enabled`,
+      box: `${p}-box`,
+      sid: `${p}-sid`,
+      rate: `${p}-rate`,
+      svcInfo: `${p}-svc-info`,
+      totalQty: `${p}-total-qty`,
+      dropQty: `${p}-drop-qty`,
+      minQty: c.key === 'likes' ? 'comp-min-likes' : `${p}-min`,
+      maxQty: c.key === 'likes' ? 'comp-max-likes' : `${p}-max`,
+      limitBadge: `${p}-limit-badge`,
+      durPills: `${p}-dur-pills`,
+      customDur: `${p}-custom-dur`,
+      runsPills: `${p}-runs-pills`,
+      customRuns: `${p}-custom-runs`,
+      intSec: `${p}-interval-section`,
+      intPills: `${p}-int-pills`,
+      customInt: `${p}-custom-int`,
+      varSlider: `${p}-var-slider`,
+      varLbl: `${p}-var-lbl`,
+      repairBtn: `btn-${p}-repair`,
+      editGroup: `edit-${c.key}-group`,
+      editQty: `edit-${c.key}-qty`,
+      addGroup: `add-${c.key}-group`,
+      addQty: `add-${c.key}-qty`
+    };
+  }
+
   // --- STATE ---
   const state = {
     user: null,
@@ -17,7 +100,7 @@
     balance: null,
     currency: 'USD',
     scheduleRuns: [],   // [ [delayMinutes, quantity], ... ]
-    companionLikes: {}, // { [runIndex]: quantity }
+    companions: { likes: {}, shares: {}, saves: {} }, // { [typeKey]: { [runIndex]: quantity } }
     activePreset: '10k',
     plans: [],
     steps: [],
@@ -425,16 +508,68 @@
     return parseDuration(pill || '24h');
   }
 
-  // Helper: auto-detect default Likes service from loaded services
-  function findDefaultLikesService() {
+  // Helper: auto-detect default companion service (likes / shares / saves) from loaded services
+  function findDefaultCompanionService(typeKey = 'likes') {
+    const cfg = getCompCfg(typeKey);
     const list = Object.values(state.services || {});
     if (!list.length) return null;
     const match = list.find(s => {
       const name = (s.name || '').toLowerCase();
       const cat = (s.category || '').toLowerCase();
-      return (name.includes('like') || cat.includes('like')) && !name.includes('dislike');
+      const hay = `${name} ${cat}`;
+      const hit = cfg.keywords.some(kw => hay.includes(kw));
+      const blocked = cfg.exclude.some(ex => name.includes(ex));
+      return hit && !blocked;
     });
     return match || null;
+  }
+
+  function applyCompanionServiceToUI(typeKey, sid, { enableBox = false, repairIfSchedule = false, overwriteRate = false } = {}) {
+    const cfg = getCompCfg(typeKey);
+    const ids = getCompIds(cfg);
+    const s = state.services[parseInt(sid)] || state.services[String(sid)];
+    if (el(ids.sid) && String(el(ids.sid).value).trim() !== String(sid)) {
+      el(ids.sid).value = sid;
+    }
+    if (s) {
+      if (el(ids.svcInfo)) el(ids.svcInfo).textContent = `${s.name.slice(0, 24)} (min ${s.min}, max ${s.max}, rate ${s.rate})`;
+      if (el(ids.limitBadge)) el(ids.limitBadge).textContent = `Min ${s.min} – Max ${s.max}`;
+      if (el(ids.minQty) && !el(ids.minQty).value) el(ids.minQty).placeholder = s.min;
+      if (el(ids.rate) && (overwriteRate || !el(ids.rate).value)) el(ids.rate).value = s.rate;
+      const curDropQ = parseInt((el(ids.dropQty)?.value || '').trim()) || 0;
+      if (el(ids.dropQty) && curDropQ < s.min) el(ids.dropQty).value = s.min;
+    } else {
+      if (el(ids.svcInfo)) el(ids.svcInfo).textContent = '';
+      if (el(ids.limitBadge)) el(ids.limitBadge).textContent = '';
+    }
+    if (enableBox) {
+      if (el(ids.enabled)) el(ids.enabled).checked = true;
+      if (el(ids.box)) el(ids.box).style.display = 'flex';
+    }
+    if (repairIfSchedule && el(ids.enabled)?.checked && state.scheduleRuns.length) {
+      rePairCompanion(typeKey, false);
+    } else if (enableBox || repairIfSchedule) {
+      updateAutoStats();
+    }
+  }
+
+  function resetCompanionMaps() {
+    COMPANION_TYPES.forEach(c => { state.companions[c.key] = {}; });
+  }
+
+  function rePairAllEnabledCompanions() {
+    let anyEnabled = false;
+    COMPANION_TYPES.forEach(c => {
+      const ids = getCompIds(c);
+      if (el(ids.enabled)?.checked) {
+        anyEnabled = true;
+        rePairCompanion(c.key, false);
+      }
+    });
+    if (!anyEnabled) {
+      renderAutoTable();
+      updateAutoStats();
+    }
   }
 
   // ================================================================
@@ -701,15 +836,13 @@
         el('order-svc-info').textContent = info;
         if (el('auto-rate') && !el('auto-rate').value) el('auto-rate').value = s.rate;
       }
-      const compSid = parseInt(el('comp-sid').value.trim());
-      if (compSid && state.services[compSid]) {
-        const cs = state.services[compSid];
-        el('comp-svc-info').textContent = `${cs.name.slice(0, 24)} (min ${cs.min}, max ${cs.max}, rate ${cs.rate})`;
-        const badge = el('comp-limit-badge');
-        if (badge) badge.textContent = `Min ${cs.min} – Max ${cs.max}`;
-        if (!el('comp-min-likes').value) el('comp-min-likes').placeholder = cs.min;
-        if (el('comp-rate') && !el('comp-rate').value) el('comp-rate').value = cs.rate;
-      }
+      COMPANION_TYPES.forEach(c => {
+        const ids = getCompIds(c);
+        const csid = parseInt((el(ids.sid)?.value || '').trim());
+        if (csid && state.services[csid]) {
+          applyCompanionServiceToUI(c.key, csid, { overwriteRate: false });
+        }
+      });
       updateAutoStats();
       refreshPlans(true);
     } catch (err) {
@@ -740,6 +873,9 @@
 
     let html = '';
     filtered.slice(0, 300).forEach(s => {
+      const compBtns = COMPANION_TYPES.map(c =>
+        `<button class="btn-small btn-pick-comp" data-sid="${s.service}" data-ctype="${c.key}" style="padding: 2px 6px; font-size: 10px; font-weight: 600; margin-left: 3px; background: ${c.badgeBg}; color: ${c.accent};">Use ${c.label}</button>`
+      ).join('');
       html += `
         <tr data-sid="${s.service}" class="service-row" style="cursor: pointer;">
           <td style="font-weight: 700;">${s.service}</td>
@@ -749,8 +885,7 @@
           <td>${s.min}</td>
           <td>${s.max}</td>
           <td style="text-align: right; white-space: nowrap;">
-            <button class="btn-small btn-pick-views" data-sid="${s.service}" style="padding: 2px 7px; font-size: 10px; font-weight: 600; margin-right: 4px;">Use Views</button>
-            <button class="btn-small btn-pick-likes" data-sid="${s.service}" style="padding: 2px 7px; font-size: 10px; font-weight: 600; background: #eef2fe; color: var(--accent);">Use Likes</button>
+            <button class="btn-small btn-pick-views" data-sid="${s.service}" style="padding: 2px 7px; font-size: 10px; font-weight: 600;">Use Views</button>${compBtns}
           </td>
         </tr>
       `;
@@ -773,25 +908,6 @@
         updateAutoStats();
       };
 
-      const pickLikes = () => {
-        el('comp-sid').value = sid;
-        el('comp-svc-info').textContent = `${s.name.slice(0, 24)} (min ${s.min}, max ${s.max}, rate ${s.rate})`;
-        if (el('comp-rate')) el('comp-rate').value = s.rate;
-        const badge = el('comp-limit-badge');
-        if (badge) badge.textContent = `Min ${s.min} – Max ${s.max}`;
-        if (!el('comp-min-likes').value) el('comp-min-likes').placeholder = s.min;
-
-        el('comp-enabled').checked = true;
-        el('comp-box').style.display = 'flex';
-
-        if (state.scheduleRuns.length) {
-          rePairCompanion(false);
-        } else {
-          updateAutoStats();
-        }
-        log(`Selected Service #${sid} (${s.name}) as 2nd Service (Likes).`);
-      };
-
       const btnV = row.querySelector('.btn-pick-views');
       if (btnV) {
         btnV.addEventListener('click', e => {
@@ -800,13 +916,15 @@
         });
       }
 
-      const btnL = row.querySelector('.btn-pick-likes');
-      if (btnL) {
-        btnL.addEventListener('click', e => {
+      row.querySelectorAll('.btn-pick-comp').forEach(btnC => {
+        btnC.addEventListener('click', e => {
           e.stopPropagation();
-          pickLikes();
+          const ctype = btnC.dataset.ctype;
+          const cfg = getCompCfg(ctype);
+          applyCompanionServiceToUI(ctype, sid, { enableBox: true, repairIfSchedule: true, overwriteRate: true });
+          log(`Selected Service #${sid} (${s.name}) for ${cfg.label}.`);
         });
-      }
+      });
 
       row.addEventListener('click', () => {
         pickViews();
@@ -917,10 +1035,247 @@
     }
   }
 
+  function renderCompanionControls() {
+    const container = el('companions-container');
+    if (!container) return;
+
+    container.innerHTML = COMPANION_TYPES.map(c => {
+      const ids = getCompIds(c);
+      const labelUp = c.label.toUpperCase();
+      const lower = c.label.toLowerCase();
+      return `
+        <div style="background: #fafbfe; border: 1px solid var(--border); border-radius: 4px; padding: 8px;">
+          <label style="font-size: 11.5px; font-weight: 700; display: flex; align-items: center; gap: 6px; cursor: pointer; color: ${c.accent};">
+            <input id="${ids.enabled}" type="checkbox"> ${c.icon} ${c.slotTitle}
+          </label>
+          <div style="font-size: 10.5px; color: var(--muted); margin-top: 2px;">
+            ${c.desc}
+          </div>
+
+          <div id="${ids.box}" style="display: none; margin-top: 8px; flex-direction: column; gap: 6px;">
+            <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+              <span style="font-size: 11px; width: 92px;">${c.label} Service ID:</span>
+              <input id="${ids.sid}" type="text" class="input-entry" placeholder="${c.placeholderSid}" style="width: 70px;">
+              <span style="font-size: 11px; color: var(--muted);">Rate/1k:</span>
+              <input id="${ids.rate}" type="text" class="input-entry" placeholder="Auto" style="width: 55px; padding: 3px 5px; font-size: 11px;">
+              <span id="${ids.svcInfo}" style="font-size: 10.5px; color: var(--muted); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"></span>
+            </div>
+
+            <div>
+              <div style="font-size: 10px; font-weight: 700; color: var(--muted); margin-bottom: 2px;">TOTAL QUANTITY (${labelUp})</div>
+              <div style="display: flex; align-items: center; gap: 6px;">
+                <input id="${ids.totalQty}" type="text" class="input-entry" placeholder="Total (e.g. 1000)" style="width: 95px; padding: 3px 6px; font-size: 11.5px;">
+                <span style="font-size: 11px; color: var(--muted);">or Qty/drop:</span>
+                <input id="${ids.dropQty}" type="text" class="input-entry" value="25" style="width: 50px; padding: 3px 6px; font-size: 11.5px;">
+              </div>
+              <div style="font-size: 10px; color: var(--muted); margin-top: 2px;">
+                Leave Total empty to use Qty/drop, or enter Total (e.g. 1000).
+              </div>
+            </div>
+
+            <div>
+              <div style="font-size: 10px; font-weight: 700; color: var(--muted); margin-bottom: 2px;">MIN & MAX ${labelUp} (PER DROP)</div>
+              <div style="display: flex; align-items: center; gap: 6px;">
+                <span style="font-size: 11px; color: var(--muted);">Min:</span>
+                <input id="${ids.minQty}" type="text" class="input-entry" placeholder="Min" style="width: 50px; padding: 3px 6px; font-size: 11.5px;">
+                <span style="font-size: 11px; color: var(--muted);">Max:</span>
+                <input id="${ids.maxQty}" type="text" class="input-entry" placeholder="Max" style="width: 50px; padding: 3px 6px; font-size: 11.5px;">
+                <span id="${ids.limitBadge}" style="font-size: 10px; color: ${c.accent}; background: ${c.badgeBg}; padding: 2px 6px; border-radius: 3px;"></span>
+              </div>
+              <div style="font-size: 10px; color: var(--muted); margin-top: 2px;">
+                Randomizes each ${c.singular} drop between Min & Max (e.g. 10 to 50).
+              </div>
+            </div>
+
+            <div>
+              <div style="font-size: 10px; font-weight: 700; color: var(--muted); margin-bottom: 3px;">DELIVERY TIME (${labelUp})</div>
+              <div style="display: flex; align-items: center; gap: 5px;">
+                <div class="pill-group" id="${ids.durPills}">
+                  <div class="pill-item active" data-cdur="match">Match</div>
+                  <div class="pill-item" data-cdur="6h">6h</div>
+                  <div class="pill-item" data-cdur="12h">12h</div>
+                  <div class="pill-item" data-cdur="24h">24h</div>
+                  <div class="pill-item" data-cdur="custom">Custom</div>
+                </div>
+                <input id="${ids.customDur}" type="text" class="input-entry" value="18h" style="width: 48px; padding: 3px 5px; font-size: 11px; text-align: center;" disabled>
+              </div>
+              <div style="font-size: 10px; color: var(--muted); margin-top: 2px;">
+                'Match' spreads ${lower} across full views span, or stop earlier.
+              </div>
+            </div>
+
+            <div>
+              <div style="font-size: 10px; font-weight: 700; color: var(--muted); margin-bottom: 3px;">NUMBER OF RUNS (${labelUp})</div>
+              <div style="display: flex; align-items: center; gap: 5px;">
+                <div class="pill-group" id="${ids.runsPills}">
+                  <div class="pill-item active" data-cruns="auto">Auto</div>
+                  <div class="pill-item" data-cruns="5">5</div>
+                  <div class="pill-item" data-cruns="10">10</div>
+                  <div class="pill-item" data-cruns="20">20</div>
+                  <div class="pill-item" data-cruns="custom">Custom</div>
+                </div>
+                <input id="${ids.customRuns}" type="text" class="input-entry" value="8" style="width: 48px; padding: 3px 5px; font-size: 11px; text-align: center;" disabled>
+              </div>
+            </div>
+
+            <div id="${ids.intSec}">
+              <div style="display: flex; align-items: center; gap: 5px;">
+                <span style="font-size: 11px; color: var(--muted); width: 48px;">Interval:</span>
+                <div class="pill-group" id="${ids.intPills}">
+                  <div class="pill-item" data-cint="30m">30m</div>
+                  <div class="pill-item active" data-cint="1h">1h</div>
+                  <div class="pill-item" data-cint="2h">2h</div>
+                  <div class="pill-item" data-cint="custom">Custom</div>
+                </div>
+                <input id="${ids.customInt}" type="text" class="input-entry" value="45m" style="width: 48px; padding: 3px 5px; font-size: 11px; text-align: center;" disabled>
+              </div>
+              <div style="font-size: 10px; color: var(--muted); margin-top: 2px;">
+                Auto = drop by interval. Number = pick that many view runs.
+              </div>
+            </div>
+
+            <div>
+              <div style="display: flex; justify-content: space-between; font-size: 10.5px;">
+                <span style="color: var(--muted); font-size: 10px; font-weight: 700;">RANDOM VARIANCE (${labelUp})</span>
+                <span id="${ids.varLbl}" style="font-weight: 700; color: var(--success); background: #e7f6ee; padding: 1px 6px; border-radius: 3px;">±20%</span>
+              </div>
+              <input id="${ids.varSlider}" type="range" min="0" max="50" value="20" style="width: 100%;">
+              <div style="font-size: 10px; color: var(--muted); margin-top: 2px;">
+                Nudges each ${c.singular} drop up or down for natural variation.
+              </div>
+            </div>
+
+            <button id="${ids.repairBtn}" class="btn-small" style="width: 100%; margin-top: 4px; padding: 5px; font-weight: 600;">
+              ↻ Re-pair / Reset ${c.label} across schedule
+            </button>
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  function bindCompanionEvents(cfg) {
+    const ids = getCompIds(cfg);
+    const key = cfg.key;
+    const repairIfActive = () => {
+      if (el(ids.enabled).checked && state.scheduleRuns.length) rePairCompanion(key, false);
+    };
+
+    el(ids.rate).addEventListener('input', () => updateAutoStats());
+
+    el(ids.sid).addEventListener('input', () => {
+      const sidTxt = el(ids.sid).value.trim();
+      if (/^\d+$/.test(sidTxt)) {
+        const sid = parseInt(sidTxt);
+        if (state.services[sid] || state.services[sidTxt]) {
+          applyCompanionServiceToUI(key, sid, { repairIfSchedule: true, overwriteRate: true });
+          return;
+        }
+      }
+      el(ids.svcInfo).textContent = '';
+      el(ids.limitBadge).textContent = '';
+      repairIfActive();
+      updateAutoStats();
+    });
+
+    el(ids.enabled).addEventListener('change', e => {
+      const isChecked = e.target.checked;
+      el(ids.box).style.display = isChecked ? 'flex' : 'none';
+      if (isChecked) {
+        if (!el(ids.sid).value.trim()) {
+          const defSvc = findDefaultCompanionService(key);
+          if (defSvc) applyCompanionServiceToUI(key, defSvc.service, { overwriteRate: true });
+        }
+        if (state.scheduleRuns.length) rePairCompanion(key, false);
+        else updateAutoStats();
+      } else {
+        state.companions[key] = {};
+        renderAutoTable();
+        updateAutoStats();
+      }
+    });
+
+    // Duration pills + custom input
+    document.querySelectorAll(`#${ids.durPills} .pill-item`).forEach(pill => {
+      pill.addEventListener('click', () => {
+        document.querySelectorAll(`#${ids.durPills} .pill-item`).forEach(p => p.classList.remove('active'));
+        pill.classList.add('active');
+        const isCustom = (pill.dataset.cdur === 'custom');
+        el(ids.customDur).disabled = !isCustom;
+        if (isCustom) el(ids.customDur).focus();
+        repairIfActive();
+      });
+    });
+    el(ids.customDur).addEventListener('input', () => {
+      setSelectedPill(ids.durPills, 'custom');
+      el(ids.customDur).disabled = false;
+      repairIfActive();
+    });
+
+    // Runs pills + custom input
+    document.querySelectorAll(`#${ids.runsPills} .pill-item`).forEach(pill => {
+      pill.addEventListener('click', () => {
+        document.querySelectorAll(`#${ids.runsPills} .pill-item`).forEach(p => p.classList.remove('active'));
+        pill.classList.add('active');
+        const isCustom = (pill.dataset.cruns === 'custom');
+        el(ids.customRuns).disabled = !isCustom;
+        if (isCustom) el(ids.customRuns).focus();
+
+        const intSec = el(ids.intSec);
+        const isAuto = (pill.dataset.cruns === 'auto');
+        if (intSec) {
+          intSec.style.opacity = isAuto ? '1' : '0.4';
+          intSec.querySelectorAll('input').forEach(x => { x.disabled = !isAuto; });
+        }
+        repairIfActive();
+      });
+    });
+    el(ids.customRuns).addEventListener('input', () => {
+      setSelectedPill(ids.runsPills, 'custom');
+      el(ids.customRuns).disabled = false;
+      repairIfActive();
+    });
+
+    // Interval pills + custom input
+    document.querySelectorAll(`#${ids.intPills} .pill-item`).forEach(pill => {
+      pill.addEventListener('click', () => {
+        document.querySelectorAll(`#${ids.intPills} .pill-item`).forEach(p => p.classList.remove('active'));
+        pill.classList.add('active');
+        const isCustom = (pill.dataset.cint === 'custom');
+        el(ids.customInt).disabled = !isCustom;
+        if (isCustom) el(ids.customInt).focus();
+        repairIfActive();
+      });
+    });
+    el(ids.customInt).addEventListener('input', () => {
+      setSelectedPill(ids.intPills, 'custom');
+      el(ids.customInt).disabled = false;
+      repairIfActive();
+    });
+
+    // Total, drop, min & max qty inputs
+    [ids.totalQty, ids.dropQty, ids.minQty, ids.maxQty].forEach(inputId => {
+      el(inputId).addEventListener('input', repairIfActive);
+    });
+
+    // Variance slider
+    el(ids.varSlider).addEventListener('input', e => {
+      el(ids.varLbl).textContent = `±${e.target.value}%`;
+      repairIfActive();
+    });
+
+    // Re-pair button
+    el(ids.repairBtn).addEventListener('click', () => {
+      rePairCompanion(key, true);
+    });
+  }
+
   // ================================================================
   //  TAB 3: AUTO PLAN
   // ================================================================
   function initAutoPlan() {
+    renderCompanionControls();
+
     // Two-way sync to New Order tab
     el('auto-sid').addEventListener('input', () => {
       const val = el('auto-sid').value.trim();
@@ -938,50 +1293,15 @@
       el('auto-rate').addEventListener('input', () => updateAutoStats());
     }
 
-    if (el('comp-rate')) {
-      el('comp-rate').addEventListener('input', () => updateAutoStats());
-    }
-
     el('auto-link').addEventListener('input', () => {
       el('order-link').value = el('auto-link').value;
     });
 
-    // Companion SID change (exact desktop on_comp_sid_change parity)
-    el('comp-sid').addEventListener('input', () => {
-      const sidTxt = el('comp-sid').value.trim();
-      if (/^\d+$/.test(sidTxt)) {
-        const sid = parseInt(sidTxt);
-        const s = state.services[sid] || state.services[sidTxt];
-        if (s) {
-          el('comp-svc-info').textContent = `${s.name.slice(0, 24)} (min ${s.min}, max ${s.max}, rate ${s.rate})`;
-          const badge = el('comp-limit-badge');
-          if (badge) badge.textContent = `Min ${s.min} – Max ${s.max}`;
-          if (!el('comp-min-likes').value) el('comp-min-likes').placeholder = s.min;
-          if (el('comp-rate')) el('comp-rate').value = s.rate;
-
-          // Elevate drop qty to service minimum if currently lower (preventing likes below min)
-          const curDropQ = parseInt(el('comp-drop-qty').value.trim()) || 0;
-          if (curDropQ < s.min) {
-            el('comp-drop-qty').value = s.min;
-          }
-          if (el('comp-enabled').checked && state.scheduleRuns.length) {
-            rePairCompanion(false);
-          }
-          updateAutoStats();
-          return;
-        }
-      }
-      el('comp-svc-info').textContent = '';
-      const badge = el('comp-limit-badge');
-      if (badge) badge.textContent = '';
-      if (el('comp-enabled').checked && state.scheduleRuns.length) {
-        rePairCompanion(false);
-      }
-      updateAutoStats();
-    });
+    // Bind Likes, Shares, Saves companion controls cleanly
+    COMPANION_TYPES.forEach(bindCompanionEvents);
 
     // Preset pills (1k, 5k, 10k, 20k, 50k, Custom)
-    document.querySelectorAll('#tab-auto .pill-group:not(#auto-dur-pills):not(#auto-runs-pills):not(#comp-dur-pills):not(#comp-runs-pills):not(#comp-int-pills) .pill-item').forEach(pill => {
+    document.querySelectorAll('#tab-auto .pill-item[data-preset]').forEach(pill => {
       pill.addEventListener('click', () => {
         pill.parentElement.querySelectorAll('.pill-item').forEach(p => p.classList.remove('active'));
         pill.classList.add('active');
@@ -1034,124 +1354,6 @@
       el('auto-var-lbl').textContent = `±${e.target.value}%`;
     });
 
-    // Companion Toggle Checkbox
-    el('comp-enabled').addEventListener('change', e => {
-      const isChecked = e.target.checked;
-      el('comp-box').style.display = isChecked ? 'flex' : 'none';
-      if (isChecked) {
-        let compSidVal = el('comp-sid').value.trim();
-        if (!compSidVal) {
-          const defLikes = findDefaultLikesService();
-          if (defLikes) {
-            el('comp-sid').value = defLikes.service;
-            el('comp-svc-info').textContent = `${defLikes.name.slice(0, 24)} (min ${defLikes.min}, max ${defLikes.max}, rate ${defLikes.rate})`;
-            if (el('comp-rate')) el('comp-rate').value = defLikes.rate;
-            const badge = el('comp-limit-badge');
-            if (badge) badge.textContent = `Min ${defLikes.min} – Max ${defLikes.max}`;
-            const curDropQ = parseInt(el('comp-drop-qty').value.trim()) || 0;
-            if (curDropQ < defLikes.min) el('comp-drop-qty').value = defLikes.min;
-          }
-        }
-        if (state.scheduleRuns.length) {
-          rePairCompanion(false);
-        } else {
-          updateAutoStats();
-        }
-      } else {
-        state.companionLikes = {};
-        renderAutoTable();
-        updateAutoStats();
-      }
-    });
-
-    // Companion Delivery time pills
-    document.querySelectorAll('#comp-dur-pills .pill-item').forEach(pill => {
-      pill.addEventListener('click', () => {
-        document.querySelectorAll('#comp-dur-pills .pill-item').forEach(p => p.classList.remove('active'));
-        pill.classList.add('active');
-        const isCustom = (pill.dataset.cdur === 'custom');
-        el('comp-custom-dur').disabled = !isCustom;
-        if (isCustom) el('comp-custom-dur').focus();
-        if (el('comp-enabled').checked && state.scheduleRuns.length) rePairCompanion(false);
-      });
-    });
-
-    el('comp-custom-dur').addEventListener('input', () => {
-      setSelectedPill('comp-dur-pills', 'custom');
-      el('comp-custom-dur').disabled = false;
-      if (el('comp-enabled').checked && state.scheduleRuns.length) rePairCompanion(false);
-    });
-
-    // Companion Number of runs pills
-    document.querySelectorAll('#comp-runs-pills .pill-item').forEach(pill => {
-      pill.addEventListener('click', () => {
-        document.querySelectorAll('#comp-runs-pills .pill-item').forEach(p => p.classList.remove('active'));
-        pill.classList.add('active');
-        const isCustom = (pill.dataset.cruns === 'custom');
-        el('comp-custom-runs').disabled = !isCustom;
-        if (isCustom) el('comp-custom-runs').focus();
-
-        const intSec = el('comp-interval-section');
-        const isAuto = (pill.dataset.cruns === 'auto');
-        if (intSec) {
-          intSec.style.opacity = isAuto ? '1' : '0.4';
-          intSec.querySelectorAll('input, .pill-item').forEach(x => {
-            if (x.tagName === 'INPUT') x.disabled = !isAuto;
-          });
-        }
-        if (el('comp-enabled').checked && state.scheduleRuns.length) rePairCompanion(false);
-      });
-    });
-
-    el('comp-custom-runs').addEventListener('input', () => {
-      setSelectedPill('comp-runs-pills', 'custom');
-      el('comp-custom-runs').disabled = false;
-      if (el('comp-enabled').checked && state.scheduleRuns.length) rePairCompanion(false);
-    });
-
-    // Companion Interval pills
-    document.querySelectorAll('#comp-int-pills .pill-item').forEach(pill => {
-      pill.addEventListener('click', () => {
-        document.querySelectorAll('#comp-int-pills .pill-item').forEach(p => p.classList.remove('active'));
-        pill.classList.add('active');
-        const isCustom = (pill.dataset.cint === 'custom');
-        el('comp-custom-int').disabled = !isCustom;
-        if (isCustom) el('comp-custom-int').focus();
-        if (el('comp-enabled').checked && state.scheduleRuns.length) rePairCompanion(false);
-      });
-    });
-
-    el('comp-custom-int').addEventListener('input', () => {
-      setSelectedPill('comp-int-pills', 'custom');
-      el('comp-custom-int').disabled = false;
-      if (el('comp-enabled').checked && state.scheduleRuns.length) rePairCompanion(false);
-    });
-
-    // Companion Total Qty, Qty/drop, Min & Max likes inputs
-    el('comp-total-qty').addEventListener('input', () => {
-      if (el('comp-enabled').checked && state.scheduleRuns.length) rePairCompanion(false);
-    });
-    el('comp-drop-qty').addEventListener('input', () => {
-      if (el('comp-enabled').checked && state.scheduleRuns.length) rePairCompanion(false);
-    });
-    el('comp-min-likes').addEventListener('input', () => {
-      if (el('comp-enabled').checked && state.scheduleRuns.length) rePairCompanion(false);
-    });
-    el('comp-max-likes').addEventListener('input', () => {
-      if (el('comp-enabled').checked && state.scheduleRuns.length) rePairCompanion(false);
-    });
-
-    // Companion Variance slider
-    el('comp-var-slider').addEventListener('input', e => {
-      el('comp-var-lbl').textContent = `±${e.target.value}%`;
-      if (el('comp-enabled').checked && state.scheduleRuns.length) rePairCompanion(false);
-    });
-
-    // Re-pair button
-    el('btn-comp-repair').addEventListener('click', () => {
-      rePairCompanion(true);
-    });
-
     // Advanced collapsible
     el('btn-toggle-adv').addEventListener('click', () => {
       const box = el('adv-pattern-box');
@@ -1177,11 +1379,20 @@
       });
     }
     el('btn-auto-add').addEventListener('click', () => {
-      // Set default minimums on add modal
-      const compSid = parseInt(el('comp-sid').value.trim());
-      const compS = state.services[compSid];
-      const sMin = (compS && compS.min) ? compS.min : 10;
-      el('add-likes-qty').placeholder = `Min ${sMin} (or leave empty)`;
+      COMPANION_TYPES.forEach(c => {
+        const ids = getCompIds(c);
+        const on = Boolean(el(ids.enabled)?.checked);
+        const grp = el(ids.addGroup);
+        const inp = el(ids.addQty);
+        if (grp) grp.style.display = on ? 'block' : 'none';
+        if (on && inp) {
+          const csid = parseInt((el(ids.sid)?.value || '').trim());
+          const compS = state.services[csid];
+          const sMin = (compS && compS.min) ? compS.min : 10;
+          inp.placeholder = `Min ${sMin} (or leave empty)`;
+          inp.value = '';
+        }
+      });
       el('modal-add').classList.remove('hidden');
     });
 
@@ -1395,119 +1606,110 @@
     }
 
     state.scheduleRuns = runs;
-    state.companionLikes = {};
+    resetCompanionMaps();
 
     log(`Schedule built: ${runs.length} run(s), ${runs.reduce((a, [, q]) => a + q, 0)} total, last one ${fmtGap(runs.length ? runs[runs.length - 1][0] : 0)} from the start.`);
 
-    // 11. Auto re-pair companion if enabled (line 1589)
-    if (el('comp-enabled').checked) {
-      rePairCompanion(false);
-    } else {
-      renderAutoTable();
-      updateAutoStats();
-    }
+    // 11. Auto re-pair all enabled companions (Likes / Shares / Saves)
+    rePairAllEnabledCompanions();
   }
 
   // ================================================================
-  //  rePairCompanion — Exact desktop re_pair_companion parity (lines 1378-1506)
-  //  Strictly enforces service minimum for Likes (no like below service min allowed)
+  //  rePairCompanion — Parameterized pairing for Likes, Shares & Saves
+  //  Strictly enforces service minimum per drop (no drop below service min allowed)
   // ================================================================
-  function rePairCompanion(showAlerts = false) {
+  function rePairCompanion(typeKey = 'likes', showAlerts = false) {
     if (!state.scheduleRuns.length) {
       if (showAlerts) alert("Generate or add view runs first.");
       return;
     }
 
-    let compSidTxt = el('comp-sid').value.trim();
+    const cfg = getCompCfg(typeKey);
+    const ids = getCompIds(cfg);
+    const lowerLabel = cfg.label.toLowerCase();
+
+    let compSidTxt = el(ids.sid).value.trim();
     if (!compSidTxt || !/^\d+$/.test(compSidTxt)) {
-      const defSvc = findDefaultLikesService();
+      const defSvc = findDefaultCompanionService(cfg.key);
       if (defSvc) {
         compSidTxt = String(defSvc.service);
-        el('comp-sid').value = compSidTxt;
-        if (el('comp-svc-info')) el('comp-svc-info').textContent = `${defSvc.name.slice(0, 24)} (min ${defSvc.min}, max ${defSvc.max}, rate ${defSvc.rate})`;
-        if (el('comp-rate') && !el('comp-rate').value) el('comp-rate').value = defSvc.rate;
-        const badge = el('comp-limit-badge');
-        if (badge) badge.textContent = `Min ${defSvc.min} – Max ${defSvc.max}`;
-        if (!el('comp-min-likes').value) el('comp-min-likes').placeholder = defSvc.min;
+        applyCompanionServiceToUI(cfg.key, defSvc.service, { overwriteRate: false });
       }
     }
 
     if (!compSidTxt && showAlerts) {
-      alert("Enter a numeric Service ID for the 2nd service (e.g. Likes).");
+      alert(`Enter a numeric Service ID for ${cfg.label}.`);
       return;
     }
 
     const csid = compSidTxt && /^\d+$/.test(compSidTxt) ? parseInt(compSidTxt) : null;
     const compS = csid ? (state.services[csid] || state.services[compSidTxt]) : null;
-    // Strict service minimum floor: defaults to at least 10 if not yet loaded from panel
     const sMin = (compS && compS.min) ? compS.min : 10;
     const sMax = (compS && compS.max) ? compS.max : 1e9;
 
-    // 1. Total Quantity or Qty per drop (lines 1391-1409)
-    const totalTxt = el('comp-total-qty').value.trim();
+    // 1. Total Quantity or Qty per drop
+    const totalTxt = el(ids.totalQty).value.trim();
     let compTotal = null;
     if (totalTxt) {
       if (!/^\d+$/.test(totalTxt) || parseInt(totalTxt) < 1) {
-        if (showAlerts) alert("2nd service Total quantity must be a whole number, 1 or more (or leave empty).");
+        if (showAlerts) alert(`${cfg.label} Total quantity must be a whole number, 1 or more (or leave empty).`);
         return;
       }
       compTotal = parseInt(totalTxt);
       if (compTotal < sMin) {
-        if (showAlerts) alert(`Total likes quantity ${compTotal} is below the service minimum (${sMin}).`);
+        if (showAlerts) alert(`Total ${lowerLabel} quantity ${compTotal} is below the service minimum (${sMin}).`);
         return;
       }
       if (compS && !(compS.min <= compTotal && compTotal <= compS.max)) {
-        if (showAlerts) alert(`Total quantity ${compTotal} is outside 2nd service limits (${compS.min} to ${compS.max}).`);
+        if (showAlerts) alert(`Total ${lowerLabel} quantity ${compTotal} is outside service limits (${compS.min} to ${compS.max}).`);
         return;
       }
     }
 
-    const qtyTxt = el('comp-drop-qty').value.trim();
-    let baseQty = sMin; // default to at least service minimum
-    if (qtyTxt) {
+    const qtyTxt = el(ids.dropQty).value.trim();
+    let baseQty = sMin;
+    if (qtyTxt && !qtyTxt.includes('-')) {
       if (!/^\d+$/.test(qtyTxt) || parseInt(qtyTxt) < 1) {
-        if (showAlerts) alert("Quantity per drop must be 1 or more.");
+        if (showAlerts) alert(`${cfg.label} quantity per drop must be 1 or more.`);
         return;
       }
       baseQty = parseInt(qtyTxt);
     }
-    // Enforce service minimum on baseQty
     if (baseQty < sMin) {
       baseQty = sMin;
-      el('comp-drop-qty').value = sMin;
+      el(ids.dropQty).value = sMin;
     }
 
-    // 2. Delivery Time / Duration for companion (lines 1411-1428)
-    const durChoice = getSelectedPillVal('comp-dur-pills');
+    // 2. Delivery Time / Duration
+    const durChoice = getSelectedPillVal(ids.durPills);
     let maxCompDelay;
     if (durChoice === 'match') {
       maxCompDelay = state.scheduleRuns[state.scheduleRuns.length - 1][0];
     } else {
-      const durStr = durChoice === 'custom' ? el('comp-custom-dur').value.trim() : durChoice;
+      const durStr = durChoice === 'custom' ? el(ids.customDur).value.trim() : durChoice;
       try {
         maxCompDelay = parseDuration(durStr);
         if (maxCompDelay <= 0) throw new Error();
       } catch {
-        if (showAlerts) alert("2nd service duration should look like 6h, 12h, 24h, 36h.");
+        if (showAlerts) alert(`${cfg.label} duration should look like 6h, 12h, 24h, 36h.`);
         return;
       }
     }
 
-    // Eligible view runs within companion delivery time
     let eligible = [];
     state.scheduleRuns.forEach(([d], idx) => {
       if (d <= maxCompDelay + 0.001) eligible.push(idx);
     });
     if (!eligible.length) eligible = [0];
 
-    // 3. Number of Runs or Auto (Interval) — exact desktop logic (lines 1430-1461)
-    const nrunsChoice = getSelectedPillVal('comp-runs-pills');
+    // 3. Number of Runs or Auto (Interval)
+    const nrunsChoice = getSelectedPillVal(ids.runsPills);
     let chosenIndices = [];
 
     if (nrunsChoice !== 'auto') {
-      const nTxt = nrunsChoice === 'custom' ? el('comp-custom-runs').value.trim() : nrunsChoice;
+      const nTxt = nrunsChoice === 'custom' ? el(ids.customRuns).value.trim() : nrunsChoice;
       if (!/^\d+$/.test(nTxt) || parseInt(nTxt) < 1) {
-        if (showAlerts) alert("Number of runs for 2nd service must be 1 or more.");
+        if (showAlerts) alert(`Number of runs for ${cfg.label} must be 1 or more.`);
         return;
       }
       const targetN = Math.max(1, Math.min(parseInt(nTxt), eligible.length));
@@ -1522,15 +1724,14 @@
         }
       }
     } else {
-      // Auto: drop by interval (e.g. 1h default, 30m, 2h) - exact desktop lines 1446-1460
-      const intChoice = getSelectedPillVal('comp-int-pills');
+      const intChoice = getSelectedPillVal(ids.intPills);
       let intervalMins;
       try {
-        const intervalStr = intChoice === 'custom' ? el('comp-custom-int').value.trim() : intChoice;
+        const intervalStr = intChoice === 'custom' ? el(ids.customInt).value.trim() : intChoice;
         intervalMins = parseDuration(intervalStr);
         if (intervalMins <= 0) throw new Error();
       } catch {
-        if (showAlerts) alert("Ride-along interval must look like 1h, 30m, 2h, 45m.");
+        if (showAlerts) alert(`${cfg.label} interval must look like 1h, 30m, 2h, 45m.`);
         return;
       }
 
@@ -1545,118 +1746,90 @@
       }
     }
 
-    // 4. Min & Max likes per drop inputs
-    const minLikesTxt = el('comp-min-likes').value.trim();
-    const maxLikesTxt = el('comp-max-likes').value.trim();
-    let userMinLikes = minLikesTxt && /^\d+$/.test(minLikesTxt) ? parseInt(minLikesTxt) : null;
-    let userMaxLikes = maxLikesTxt && /^\d+$/.test(maxLikesTxt) ? parseInt(maxLikesTxt) : null;
+    // 4. Min & Max per drop inputs
+    const minTxt = el(ids.minQty).value.trim();
+    const maxTxt = el(ids.maxQty).value.trim();
+    let userMin = minTxt && /^\d+$/.test(minTxt) ? parseInt(minTxt) : null;
+    let userMax = maxTxt && /^\d+$/.test(maxTxt) ? parseInt(maxTxt) : null;
 
-    // Check if comp-drop-qty has a range like "10-50"
-    if (userMinLikes === null && userMaxLikes === null && qtyTxt.includes('-')) {
+    if (userMin === null && userMax === null && qtyTxt.includes('-')) {
       const parts = qtyTxt.split('-').map(p => parseInt(p.trim())).filter(n => !isNaN(n));
       if (parts.length === 2) {
-        userMinLikes = Math.min(parts[0], parts[1]);
-        userMaxLikes = Math.max(parts[0], parts[1]);
+        userMin = Math.min(parts[0], parts[1]);
+        userMax = Math.max(parts[0], parts[1]);
       }
     }
 
-    const effMinLikes = userMinLikes !== null ? Math.max(sMin, userMinLikes) : sMin;
-    const effMaxLikes = userMaxLikes !== null ? Math.min(sMax, Math.max(effMinLikes, userMaxLikes)) : sMax;
+    const effMin = userMin !== null ? Math.max(sMin, userMin) : sMin;
+    const effMax = userMax !== null ? Math.min(sMax, Math.max(effMin, userMax)) : sMax;
 
-    if (userMinLikes !== null && userMinLikes < sMin) {
-      if (showAlerts) alert(`Minimum likes per drop (${userMinLikes}) is below service minimum (${sMin}). Clamped to ${sMin}.`);
-      el('comp-min-likes').value = sMin;
+    if (userMin !== null && userMin < sMin) {
+      if (showAlerts) alert(`Minimum ${lowerLabel} per drop (${userMin}) is below service minimum (${sMin}). Clamped to ${sMin}.`);
+      el(ids.minQty).value = sMin;
     }
 
-    // Truncate chosenIndices if compTotal cannot support that many runs at effMinLikes
     if (compTotal !== null) {
-      const maxPossibleDrops = Math.max(1, Math.floor(compTotal / effMinLikes));
+      const maxPossibleDrops = Math.max(1, Math.floor(compTotal / effMin));
       if (chosenIndices.length > maxPossibleDrops) {
         chosenIndices = chosenIndices.slice(0, maxPossibleDrops);
       }
     }
 
     // 5. Calculate Quantities with Random Variance or Min/Max Range
-    const variancePct = parseInt(el('comp-var-slider').value) || 20;
+    const variancePct = parseInt(el(ids.varSlider).value) || 20;
     const k = chosenIndices.length;
     let quantities = [];
-    const hasMinMax = (userMinLikes !== null || userMaxLikes !== null);
+    const hasMinMax = (userMin !== null || userMax !== null);
 
     if (compTotal !== null) {
       if (k === 1) {
         quantities = [compTotal];
-      } else if (hasMinMax) {
-        // Distribute compTotal across runs respecting effMinLikes and effMaxLikes bounds
-        const rawWeights = chosenIndices.map(() => 1.0 - (variancePct / 100.0) + Math.random() * (2 * variancePct / 100.0));
+      } else if (hasMinMax || variancePct > 0) {
+        const floorB = hasMinMax ? effMin : sMin;
+        const ceilB = hasMinMax ? effMax : sMax;
+        const vFrac = variancePct / 100.0;
+        const rawWeights = chosenIndices.map(() => 1.0 - vFrac + Math.random() * (2 * vFrac));
         const weightSum = rawWeights.reduce((a, b) => a + b, 0);
-        let rawQtys = rawWeights.map(w => Math.max(effMinLikes, Math.min(effMaxLikes, Math.round(compTotal * w / Math.max(1e-9, weightSum)))));
+        let rawQtys = rawWeights.map(w => Math.max(floorB, Math.min(ceilB, Math.round(compTotal * w / Math.max(1e-9, weightSum)))));
         let diff = compTotal - rawQtys.reduce((a, b) => a + b, 0);
         const step = diff > 0 ? 1 : -1;
         let ptr = 0;
         while (diff !== 0 && ptr < k * 20) {
           const tgt = ptr % k;
-          if (step > 0 && rawQtys[tgt] < effMaxLikes) {
-            rawQtys[tgt] += 1;
-            diff -= 1;
-          } else if (step < 0 && rawQtys[tgt] > effMinLikes) {
-            rawQtys[tgt] -= 1;
-            diff += 1;
-          }
-          ptr++;
-        }
-        quantities = rawQtys;
-      } else if (variancePct > 0) {
-        const vFrac = variancePct / 100.0;
-        const rawWeights = chosenIndices.map(() => 1.0 - vFrac + Math.random() * (2 * vFrac));
-        const weightSum = rawWeights.reduce((a, b) => a + b, 0);
-        let rawQtys = rawWeights.map(w => Math.max(sMin, Math.min(sMax, Math.round(compTotal * w / Math.max(1e-9, weightSum)))));
-        let diff = compTotal - rawQtys.reduce((a, b) => a + b, 0);
-        const step = diff > 0 ? 1 : -1;
-        let ptr = 0;
-        while (diff !== 0 && ptr < k * 10) {
-          const tgt = ptr % k;
-          if (step > 0 && rawQtys[tgt] < sMax) {
-            rawQtys[tgt] += 1;
-            diff -= 1;
-          } else if (step < 0 && rawQtys[tgt] > sMin) {
-            rawQtys[tgt] -= 1;
-            diff += 1;
-          }
+          if (step > 0 && rawQtys[tgt] < ceilB) { rawQtys[tgt] += 1; diff -= 1; }
+          else if (step < 0 && rawQtys[tgt] > floorB) { rawQtys[tgt] -= 1; diff += 1; }
           ptr++;
         }
         quantities = rawQtys;
       } else {
-        const baseQ = Math.max(effMinLikes, Math.floor(compTotal / k));
+        const baseQ = Math.max(effMin, Math.floor(compTotal / k));
         const rem = compTotal - baseQ * k;
         quantities = chosenIndices.map((_, i) => baseQ + (i < rem ? 1 : 0));
       }
+    } else if (hasMinMax) {
+      quantities = chosenIndices.map(() => {
+        if (effMax <= effMin) return effMin;
+        return Math.floor(effMin + Math.random() * (effMax - effMin + 1));
+      });
     } else {
-      if (hasMinMax) {
-        // Randomize each like drop between effMinLikes and effMaxLikes
-        quantities = chosenIndices.map(() => {
-          if (effMaxLikes <= effMinLikes) return effMinLikes;
-          return Math.floor(effMinLikes + Math.random() * (effMaxLikes - effMinLikes + 1));
-        });
-      } else {
-        quantities = chosenIndices.map(() => {
-          let q = baseQty;
-          if (variancePct > 0) {
-            const factor = 1.0 - (variancePct / 100) + Math.random() * (2 * variancePct / 100);
-            q = Math.round(baseQty * factor);
-          }
-          // Strict service minimum and maximum clamping
-          return Math.max(sMin, Math.min(q, sMax));
-        });
-      }
+      quantities = chosenIndices.map(() => {
+        let q = baseQty;
+        if (variancePct > 0) {
+          const factor = 1.0 - (variancePct / 100) + Math.random() * (2 * variancePct / 100);
+          q = Math.round(baseQty * factor);
+        }
+        return Math.max(sMin, Math.min(q, sMax));
+      });
     }
 
-    state.companionLikes = {};
+    const newMap = {};
     chosenIndices.forEach((runIdx, i) => {
-      state.companionLikes[runIdx] = quantities[i];
+      newMap[runIdx] = quantities[i];
     });
+    state.companions[cfg.key] = newMap;
 
-    const totAssigned = Object.values(state.companionLikes).reduce((a, b) => a + b, 0);
-    log(`Paired 2nd service #${compSidTxt}: ${chosenIndices.length} drops, total ${totAssigned} likes (±${variancePct}% variance across ${chosenIndices.length} runs).`);
+    const totAssigned = Object.values(newMap).reduce((a, b) => a + b, 0);
+    log(`Paired ${cfg.label} #${compSidTxt || '?'}: ${chosenIndices.length} drops, total ${totAssigned} ${lowerLabel} (±${variancePct}% variance).`);
 
     renderAutoTable();
     updateAutoStats();
@@ -1686,23 +1859,22 @@
       if (i === 0) gapStr = d < 0.5 ? 'now' : `in ${fmtGap(d)}`;
       else gapStr = `+${fmtGap(d - state.scheduleRuns[i - 1][0])}`;
 
-      const likes = state.companionLikes[i];
-      const compOn = el('comp-enabled').checked;
-      let likesBadge = '';
-      if (compOn) {
-        if (likes !== undefined && likes !== null) {
-          likesBadge = `<span class="h-badge" title="Click to edit like drop" onclick="window.anoxyEditLikes(${i})">♥+${likes}</span>`;
-        } else {
-          likesBadge = `<span class="h-add" title="Click to add like drop here" onclick="window.anoxyAddLikes(${i})">+♥</span>`;
+      const badges = COMPANION_TYPES.map(c => {
+        const ids = getCompIds(c);
+        if (!el(ids.enabled)?.checked) return '';
+        const qty = state.companions[c.key]?.[i];
+        if (qty !== undefined && qty !== null) {
+          return `<span class="${c.badgeClass}" title="Click to edit ${c.singular} drop" onclick="window.anoxyEditCompanion('${c.key}', ${i})">${c.icon}+${qty}</span>`;
         }
-      }
+        return `<span class="h-add" title="Click to add ${c.singular} drop here" onclick="window.anoxyAddCompanion('${c.key}', ${i})">+${c.icon}</span>`;
+      }).filter(Boolean).join(' ');
 
       html += `
         <tr>
           <td>${i + 1}</td>
           <td>${whenStr}</td>
           <td style="color: var(--muted);">${gapStr}</td>
-          <td style="font-weight: 700;">+${q} ${likesBadge}</td>
+          <td style="font-weight: 700;"><span style="display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px;">+${q} ${badges}</span></td>
           <td style="color: var(--muted);">${totalAccum}</td>
           <td>
             <button class="btn-small" style="padding: 2px 8px; font-weight: 700;" onclick="window.anoxyEditStep(${i})">✎ Edit</button>
@@ -1713,6 +1885,50 @@
     });
 
     tbody.innerHTML = html;
+  }
+
+  function resolveServiceRate(sidInputId, rateInputId, autoFillRate = false) {
+    const sidTxt = (el(sidInputId)?.value || '').trim();
+    const sid = sidTxt && /^\d+$/.test(sidTxt) ? parseInt(sidTxt) : null;
+    const svc = sid ? (state.services[sid] || state.services[sidTxt]) : null;
+    let rate = 0;
+    const manual = parseFloat(el(rateInputId)?.value);
+    if (!isNaN(manual) && manual > 0) {
+      rate = manual;
+    } else if (svc && svc.rate !== undefined && svc.rate !== null) {
+      const parsed = parseFloat(svc.rate);
+      if (!isNaN(parsed) && parsed > 0) {
+        rate = parsed;
+        if (autoFillRate && el(rateInputId) && !el(rateInputId).value) el(rateInputId).value = parsed;
+      }
+    }
+    return { sid, svc, rate };
+  }
+
+  function computePlanCostSummary(autoFillRates = false) {
+    const totalViews = state.scheduleRuns.reduce((s, [, q]) => s + q, 0);
+    const { sid, svc, rate: viewsRate } = resolveServiceRate('auto-sid', 'auto-rate', autoFillRates);
+    const viewsCost = (totalViews > 0 && viewsRate > 0) ? (totalViews * viewsRate / 1000) : 0;
+
+    const compBreakdown = COMPANION_TYPES.map(c => {
+      const ids = getCompIds(c);
+      const map = state.companions[c.key] || {};
+      const total = Object.values(map).reduce((a, b) => a + b, 0);
+      const runCount = Object.keys(map).length;
+      const { sid: csid, svc: compS, rate } = resolveServiceRate(ids.sid, ids.rate, autoFillRates);
+      const cost = (total > 0 && rate > 0) ? (total * rate / 1000) : 0;
+      const enabled = Boolean(el(ids.enabled)?.checked) && runCount > 0;
+      return { cfg: c, ids, sid: csid, svc: compS, rate, total, runCount, cost, enabled, map };
+    });
+
+    const totalCompCost = compBreakdown.reduce((a, x) => a + x.cost, 0);
+    const totalPlanCost = viewsCost + totalCompCost;
+    const hasAnyCost = viewsCost > 0 || totalCompCost > 0;
+    const curr = (state.currency || 'USD').toUpperCase();
+    const usdToInrRate = parseFloat(localStorage.getItem('anoxy_usd_inr_rate')) || 88.0;
+    const inrCost = (curr === 'INR' || curr === '₹') ? totalPlanCost : (totalPlanCost * usdToInrRate);
+
+    return { totalViews, sid, svc, viewsRate, viewsCost, compBreakdown, totalPlanCost, hasAnyCost, curr, usdToInrRate, inrCost };
   }
 
   function updateAutoStats() {
@@ -1730,7 +1946,9 @@
       return;
     }
 
-    const totalViews = runs.reduce((s, [, q]) => s + q, 0);
+    const summary = computePlanCostSummary(true);
+    const { totalViews, viewsCost, compBreakdown, totalPlanCost, hasAnyCost, curr, usdToInrRate, inrCost } = summary;
+
     const lastD = runs[n - 1][0];
     const gaps = [];
     for (let k = 0; k < n - 1; k++) gaps.push(runs[k + 1][0] - runs[k][0]);
@@ -1740,67 +1958,30 @@
     el('stat-finish').textContent = fin.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' +
                                     fin.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-    // Always count all companion likes attached to runs
-    const totalLikes = Object.values(state.companionLikes).reduce((a, b) => a + b, 0);
-    el('stat-total').textContent = totalLikes > 0 ? `${totalViews.toLocaleString()} (+${totalLikes.toLocaleString()}♥)` : totalViews.toLocaleString();
+    const activeTags = compBreakdown.filter(x => x.total > 0).map(x => `+${x.total.toLocaleString()}${x.cfg.icon}`);
+    el('stat-total').textContent = activeTags.length
+      ? `${totalViews.toLocaleString()} (${activeTags.join(' ')})`
+      : totalViews.toLocaleString();
 
-    // Look up primary (views) service & rate
-    const sidTxt = el('auto-sid').value.trim();
-    const sid = sidTxt && /^\d+$/.test(sidTxt) ? parseInt(sidTxt) : null;
-    const s = sid ? (state.services[sid] || state.services[sidTxt]) : null;
-
-    let viewsRate = 0;
-    const manualViewsRate = parseFloat(el('auto-rate')?.value);
-    if (!isNaN(manualViewsRate) && manualViewsRate > 0) {
-      viewsRate = manualViewsRate;
-    } else if (s && s.rate !== undefined && s.rate !== null) {
-      const parsed = parseFloat(s.rate);
-      if (!isNaN(parsed) && parsed > 0) {
-        viewsRate = parsed;
-        if (el('auto-rate') && !el('auto-rate').value) el('auto-rate').value = parsed;
-      }
-    }
-
-    // Look up companion (likes) service & rate
-    const compSidTxt = el('comp-sid').value.trim();
-    const compSid = compSidTxt && /^\d+$/.test(compSidTxt) ? parseInt(compSidTxt) : null;
-    const compS = compSid ? (state.services[compSid] || state.services[compSidTxt]) : null;
-
-    let likesRate = 0;
-    const manualLikesRate = parseFloat(el('comp-rate')?.value);
-    if (!isNaN(manualLikesRate) && manualLikesRate > 0) {
-      likesRate = manualLikesRate;
-    } else if (compS && compS.rate !== undefined && compS.rate !== null) {
-      const parsed = parseFloat(compS.rate);
-      if (!isNaN(parsed) && parsed > 0) {
-        likesRate = parsed;
-        if (el('comp-rate') && !el('comp-rate').value) el('comp-rate').value = parsed;
-      }
-    }
-
-    const viewsCost = (totalViews > 0 && viewsRate > 0) ? (totalViews * viewsRate / 1000) : 0;
-    const likesCost = (totalLikes > 0 && likesRate > 0) ? (totalLikes * likesRate / 1000) : 0;
-    const totalCost = viewsCost + likesCost;
-
-    const curr = (state.currency || 'USD').toUpperCase();
-    const usdToInrRate = parseFloat(localStorage.getItem('anoxy_usd_inr_rate')) || 88.0;
-
-    if (viewsCost > 0 || likesCost > 0) {
+    if (hasAnyCost) {
       let costText = '';
       let inrText = '';
 
       if (curr === 'INR' || curr === '₹') {
-        costText = `₹ ${totalCost.toFixed(2)}`;
-        inrText = `Total: ₹ ${totalCost.toFixed(2)} INR`;
-        el('stat-cost').textContent = `₹ ${totalCost.toFixed(2)}`;
+        costText = `₹ ${totalPlanCost.toFixed(2)}`;
+        inrText = `Total: ₹ ${totalPlanCost.toFixed(2)} INR`;
+        el('stat-cost').textContent = `₹ ${totalPlanCost.toFixed(2)}`;
       } else {
-        const inrEquivalent = totalCost * usdToInrRate;
-        costText = `${totalCost.toFixed(4)} ${curr}`;
-        inrText = `≈ ₹ ${inrEquivalent.toFixed(2)} INR`;
-        el('stat-cost').textContent = `${totalCost.toFixed(4)} ${curr} (₹${inrEquivalent.toFixed(2)})`;
+        costText = `${totalPlanCost.toFixed(4)} ${curr}`;
+        inrText = `≈ ₹ ${inrCost.toFixed(2)} INR`;
+        el('stat-cost').textContent = `${totalPlanCost.toFixed(4)} ${curr} (₹${inrCost.toFixed(2)})`;
       }
 
-      const breakdown = `Views: ${viewsCost.toFixed(4)} ${curr} (${totalViews.toLocaleString()}) + Likes: ${likesCost.toFixed(4)} ${curr} (${totalLikes.toLocaleString()})`;
+      const parts = [`Views: ${viewsCost.toFixed(4)} ${curr} (${totalViews.toLocaleString()})`];
+      compBreakdown.filter(x => x.total > 0).forEach(x => {
+        parts.push(`${x.cfg.label}: ${x.cost.toFixed(4)} ${curr} (${x.total.toLocaleString()})`);
+      });
+      const breakdown = parts.join(' + ');
       el('stat-cost').title = breakdown;
 
       if (el('btn-start-cost')) {
@@ -1820,7 +2001,7 @@
   }
 
   // ================================================================
-  //  startAutoPlan — Exact desktop auto_start_plan parity (lines 2151-2215)
+  //  startAutoPlan — Exact desktop auto_start_plan parity + multi-companion
   // ================================================================
   async function startAutoPlan() {
     if (!state.scheduleRuns.length) {
@@ -1844,7 +2025,6 @@
       return;
     }
 
-    // Validate every view quantity against service limits
     for (let i = 0; i < state.scheduleRuns.length; i++) {
       const [, qty] = state.scheduleRuns[i];
       if (qty < vMin || qty > vMax) {
@@ -1853,70 +2033,52 @@
       }
     }
 
-    // Validate companion quantities against service limits
-    let compSid = null;
-    const compOn = el('comp-enabled').checked && Object.keys(state.companionLikes).length > 0;
-    if (compOn) {
-      const compSidTxt = el('comp-sid').value.trim();
+    // Validate every enabled companion (Likes / Shares / Saves) against its service limits
+    const activeCompanions = [];
+    for (const c of COMPANION_TYPES) {
+      const ids = getCompIds(c);
+      const map = state.companions[c.key] || {};
+      const on = el(ids.enabled)?.checked && Object.keys(map).length > 0;
+      if (!on) continue;
+
+      const compSidTxt = el(ids.sid).value.trim();
       if (!compSidTxt || !/^\d+$/.test(compSidTxt)) {
-        alert('Please enter a valid numeric 2nd Service ID.');
+        alert(`Please enter a valid numeric ${c.label} Service ID.`);
         return;
       }
-      compSid = parseInt(compSidTxt);
+      const compSid = parseInt(compSidTxt);
       const compS = state.services[compSid];
       const sMin = (compS && compS.min) ? compS.min : 10;
       const sMax = (compS && compS.max) ? compS.max : 1e9;
 
-      for (const [runIdxStr, cq] of Object.entries(state.companionLikes)) {
+      for (const [runIdxStr, cq] of Object.entries(map)) {
         const runNum = parseInt(runIdxStr) + 1;
         if (cq < sMin || cq > sMax) {
-          alert(`Run #${runNum} likes drop quantity ${cq} is outside this service's limits (${sMin} to ${sMax}). Minimum allowed is ${sMin}.`);
+          alert(`Run #${runNum} ${c.label.toLowerCase()} drop quantity ${cq} is outside service limits (${sMin} to ${sMax}). Minimum allowed is ${sMin}.`);
           return;
         }
       }
+      activeCompanions.push({ cfg: c, compSid, map });
     }
 
-    // Cost calculation & balance check (lines 2182-2186)
-    const totalViews = state.scheduleRuns.reduce((a, [, q]) => a + q, 0);
-    let viewsRate = 0;
-    const manualViewsRate = parseFloat(el('auto-rate')?.value);
-    if (!isNaN(manualViewsRate) && manualViewsRate > 0) {
-      viewsRate = manualViewsRate;
-    } else if (s && s.rate !== undefined && s.rate !== null) {
-      const parsed = parseFloat(s.rate);
-      if (!isNaN(parsed) && parsed > 0) viewsRate = parsed;
-    }
-    const viewsCost = totalViews > 0 ? (totalViews * viewsRate / 1000) : 0;
-
-    const totalLikes = Object.values(state.companionLikes).reduce((a, b) => a + b, 0);
-    const compS = compSid ? (state.services[compSid] || state.services[String(compSid)]) : null;
-    let likesRate = 0;
-    const manualLikesRate = parseFloat(el('comp-rate')?.value);
-    if (!isNaN(manualLikesRate) && manualLikesRate > 0) {
-      likesRate = manualLikesRate;
-    } else if (compS && compS.rate !== undefined && compS.rate !== null) {
-      const parsed = parseFloat(compS.rate);
-      if (!isNaN(parsed) && parsed > 0) likesRate = parsed;
-    }
-    const likesCost = (totalLikes > 0 && likesRate > 0) ? (totalLikes * likesRate / 1000) : 0;
-    const totalPlanCost = viewsCost + likesCost;
-
-    const curr = (state.currency || 'USD').toUpperCase();
-    const usdToInrRate = parseFloat(localStorage.getItem('anoxy_usd_inr_rate')) || 88.0;
-    const inrCost = curr === 'INR' ? totalPlanCost : (totalPlanCost * usdToInrRate);
+    // Cost calculation & balance check across Views + all active companions
+    const summary = computePlanCostSummary(false);
+    const { totalViews, viewsCost, compBreakdown, totalPlanCost, curr, inrCost } = summary;
 
     if (totalPlanCost > 0 && state.balance !== null && totalPlanCost > state.balance) {
       if (!confirm(`Estimated cost ${totalPlanCost.toFixed(4)} ${curr} is higher than your balance ${state.balance} ${curr}.\nLater runs may fail. Continue anyway?`)) return;
     }
 
-    const compRunsCount = totalLikes > 0 ? Object.keys(state.companionLikes).length : 0;
-    const inrDisplay = curr === 'INR' ? `₹ ${totalPlanCost.toFixed(2)} INR` : `${totalPlanCost.toFixed(4)} ${curr} (≈ ₹ ${inrCost.toFixed(2)} INR)`;
-    const confirmMsg = `${state.scheduleRuns.length} primary runs` +
-      (totalLikes > 0 ? ` + ${compRunsCount} paired companion runs` : '') +
-      ` over this schedule.\n\nTotal views: ${totalViews.toLocaleString()}` +
-      (totalLikes > 0 ? ` + ${totalLikes.toLocaleString()} likes` : '') +
+    const activeDetails = compBreakdown.filter(x => x.enabled && x.total > 0);
+    const compRunsSummary = activeDetails.map(x => ` + ${x.runCount} ${x.cfg.label.toLowerCase()} drops`).join('');
+    const totalQtySummary = activeDetails.map(x => ` + ${x.total.toLocaleString()} ${x.cfg.label.toLowerCase()}`).join('');
+    const costParts = [`Views: ${viewsCost.toFixed(4)}`].concat(activeDetails.map(x => `${x.cfg.label}: ${x.cost.toFixed(4)}`));
+    const inrDisplay = (curr === 'INR' || curr === '₹') ? `₹ ${totalPlanCost.toFixed(2)} INR` : `${totalPlanCost.toFixed(4)} ${curr} (≈ ₹ ${inrCost.toFixed(2)} INR)`;
+
+    const confirmMsg = `${state.scheduleRuns.length} primary runs${compRunsSummary} over this schedule.` +
+      `\n\nTotal views: ${totalViews.toLocaleString()}${totalQtySummary}` +
       `\n\nTotal Estimated Cost: ${inrDisplay}` +
-      (totalLikes > 0 ? `\n(Views: ${viewsCost.toFixed(4)} + Likes: ${likesCost.toFixed(4)})` : '') +
+      (activeDetails.length ? `\n(${costParts.join(' + ')})` : '') +
       (state.balance !== null ? `\nYour Balance: ${state.balance} ${curr}` : '');
 
     if (!confirm(confirmMsg)) return;
@@ -1925,29 +2087,32 @@
     const steps = [];
 
     state.scheduleRuns.forEach(([d, q], i) => {
+      const runAt = now + d * 60000;
       steps.push({
         step_no: steps.length + 1,
-        run_at: now + d * 60000,
+        run_at: runAt,
         service_id: sid,
         link: link,
         quantity: q
       });
 
-      if (compOn && state.companionLikes[i] && compSid) {
-        steps.push({
-          step_no: steps.length + 1,
-          run_at: now + d * 60000,
-          service_id: compSid,
-          link: link,
-          quantity: state.companionLikes[i]
-        });
-      }
+      activeCompanions.forEach(({ compSid, map }) => {
+        if (map[i]) {
+          steps.push({
+            step_no: steps.length + 1,
+            run_at: runAt,
+            service_id: compSid,
+            link: link,
+            quantity: map[i]
+          });
+        }
+      });
     });
 
     const started = await savePlanToCloud(`Auto ${state.activePreset.toUpperCase()} Plan (${steps.length} drops)`, sid, link, steps);
     if (started) {
       state.scheduleRuns = [];
-      state.companionLikes = {};
+      resetCompanionMaps();
       renderAutoTable();
       updateAutoStats();
     }
@@ -2042,7 +2207,6 @@
       if (editStepIdx < 0 || editStepIdx >= state.scheduleRuns.length) return;
       const vQty = parseInt(el('edit-views-qty').value.trim()) || 0;
       const gapTxt = el('edit-gap').value.trim();
-      const lQty = parseInt(el('edit-likes-qty').value.trim()) || 0;
       const shift = el('edit-shift-chk').checked;
 
       const sidTxt = el('auto-sid').value.trim();
@@ -2064,26 +2228,32 @@
         return;
       }
 
-      // Strict validation for Likes drop quantity
-      if (el('comp-enabled').checked && lQty > 0) {
-        const compSidTxt = el('comp-sid').value.trim();
-        if (!compSidTxt || !/^\d+$/.test(compSidTxt)) {
-          alert("Please enter a numeric Likes Service ID first.");
-          return;
+      // Strict validation for all enabled companion quantities (Likes, Shares, Saves)
+      const compUpdates = {};
+      for (const c of COMPANION_TYPES) {
+        const ids = getCompIds(c);
+        if (!el(ids.enabled)?.checked) continue;
+        const cQty = parseInt((el(ids.editQty)?.value || '').trim()) || 0;
+        if (cQty > 0) {
+          const compSidTxt = el(ids.sid).value.trim();
+          if (!compSidTxt || !/^\d+$/.test(compSidTxt)) {
+            alert(`Please enter a numeric ${c.label} Service ID first.`);
+            return;
+          }
+          const compSid = parseInt(compSidTxt);
+          const compS = state.services[compSid];
+          const sMin = (compS && compS.min) ? compS.min : 10;
+          const sMax = (compS && compS.max) ? compS.max : 1e9;
+          if (cQty < sMin) {
+            alert(`${c.label} quantity ${cQty} is below this service's minimum of ${sMin}. Enter 0 to remove.`);
+            return;
+          }
+          if (cQty > sMax) {
+            alert(`${c.label} quantity ${cQty} is above this service's maximum of ${sMax}.`);
+            return;
+          }
         }
-        const compSid = parseInt(compSidTxt);
-        const compS = state.services[compSid];
-        const sMin = (compS && compS.min) ? compS.min : 10;
-        const sMax = (compS && compS.max) ? compS.max : 1e9;
-
-        if (lQty < sMin) {
-          alert(`Likes quantity ${lQty} is below this service's minimum of ${sMin}. You cannot enter less than ${sMin} likes (enter 0 to remove).`);
-          return;
-        }
-        if (lQty > sMax) {
-          alert(`Likes quantity ${lQty} is above this service's maximum of ${sMax}.`);
-          return;
-        }
+        compUpdates[c.key] = cQty;
       }
 
       const oldDelay = state.scheduleRuns[editStepIdx][0];
@@ -2092,11 +2262,10 @@
       const diff = newDelay - oldDelay;
 
       state.scheduleRuns[editStepIdx][1] = vQty;
-
-      if (el('comp-enabled').checked) {
-        if (lQty > 0) state.companionLikes[editStepIdx] = lQty;
-        else delete state.companionLikes[editStepIdx];
-      }
+      Object.entries(compUpdates).forEach(([k, cQty]) => {
+        if (cQty > 0) state.companions[k][editStepIdx] = cQty;
+        else delete state.companions[k][editStepIdx];
+      });
 
       if (shift) {
         for (let j = editStepIdx; j < state.scheduleRuns.length; j++) {
@@ -2104,13 +2273,18 @@
         }
       } else {
         state.scheduleRuns[editStepIdx][0] = newDelay;
-        // Sort preserving companion map attached to each run (exact desktop parity lines 1864-1868)
-        const decorated = state.scheduleRuns.map((r, idx) => [r[0], r[1], state.companionLikes[idx] || null]);
-        decorated.sort((a, b) => a[0] - b[0]);
-        state.scheduleRuns = decorated.map(x => [x[0], x[1]]);
-        state.companionLikes = {};
+        const decorated = state.scheduleRuns.map((r, idx) => {
+          const attached = {};
+          COMPANION_TYPES.forEach(c => { attached[c.key] = state.companions[c.key]?.[idx] || null; });
+          return { delay: r[0], qty: r[1], attached };
+        });
+        decorated.sort((a, b) => a.delay - b.delay);
+        state.scheduleRuns = decorated.map(x => [x.delay, x.qty]);
+        resetCompanionMaps();
         decorated.forEach((x, idx) => {
-          if (x[2] !== null) state.companionLikes[idx] = x[2];
+          COMPANION_TYPES.forEach(c => {
+            if (x.attached[c.key] !== null) state.companions[c.key][idx] = x.attached[c.key];
+          });
         });
       }
 
@@ -2119,14 +2293,12 @@
       updateAutoStats();
     });
 
-    // --- ADD RUN MODAL (Exact desktop auto_add parity lines 1872-1909) ---
+    // --- ADD RUN MODAL (Exact desktop auto_add parity + multi-companion) ---
     el('btn-add-cancel').addEventListener('click', () => el('modal-add').classList.add('hidden'));
 
     el('btn-add-save').addEventListener('click', () => {
       const vQty = parseInt(el('add-views-qty').value.trim()) || 0;
       const gapTxt = el('add-gap').value.trim() || '30m';
-      const lQtyTxt = el('add-likes-qty').value.trim();
-      const lQty = lQtyTxt ? parseInt(lQtyTxt) : 0;
 
       const sidTxt = el('auto-sid').value.trim();
       const sid = parseInt(sidTxt);
@@ -2147,39 +2319,51 @@
         return;
       }
 
-      if (el('comp-enabled').checked && lQty > 0) {
-        const compSidTxt = el('comp-sid').value.trim();
-        if (!compSidTxt || !/^\d+$/.test(compSidTxt)) {
-          alert("Please enter a numeric Likes Service ID first.");
-          return;
-        }
-        const compSid = parseInt(compSidTxt);
-        const compS = state.services[compSid];
-        const sMin = (compS && compS.min) ? compS.min : 10;
-        const sMax = (compS && compS.max) ? compS.max : 1e9;
-
-        if (lQty < sMin) {
-          alert(`Likes quantity ${lQty} is below this service's minimum of ${sMin}. Minimum allowed is ${sMin}.`);
-          return;
-        }
-        if (lQty > sMax) {
-          alert(`Likes quantity ${lQty} is above this service's maximum of ${sMax}.`);
-          return;
+      const compAdds = {};
+      for (const c of COMPANION_TYPES) {
+        const ids = getCompIds(c);
+        if (!el(ids.enabled)?.checked) continue;
+        const txt = (el(ids.addQty)?.value || '').trim();
+        const cQty = txt ? parseInt(txt) : 0;
+        if (cQty > 0) {
+          const compSidTxt = el(ids.sid).value.trim();
+          if (!compSidTxt || !/^\d+$/.test(compSidTxt)) {
+            alert(`Please enter a numeric ${c.label} Service ID first.`);
+            return;
+          }
+          const compSid = parseInt(compSidTxt);
+          const compS = state.services[compSid];
+          const sMin = (compS && compS.min) ? compS.min : 10;
+          const sMax = (compS && compS.max) ? compS.max : 1e9;
+          if (cQty < sMin) {
+            alert(`${c.label} quantity ${cQty} is below service minimum (${sMin}). Minimum allowed is ${sMin}.`);
+            return;
+          }
+          if (cQty > sMax) {
+            alert(`${c.label} quantity ${cQty} is above service maximum (${sMax}).`);
+            return;
+          }
+          compAdds[c.key] = cQty;
         }
       }
 
       const lastDelay = state.scheduleRuns.length ? state.scheduleRuns[state.scheduleRuns.length - 1][0] : 0.0;
       const newDelay = lastDelay + gapMins;
 
-      // Add run and preserve companion map
-      const decorated = state.scheduleRuns.map((r, idx) => [r[0], r[1], state.companionLikes[idx] || null]);
-      decorated.push([newDelay, vQty, (lQty > 0 ? lQty : null)]);
-      decorated.sort((a, b) => a[0] - b[0]);
+      const decorated = state.scheduleRuns.map((r, idx) => {
+        const attached = {};
+        COMPANION_TYPES.forEach(c => { attached[c.key] = state.companions[c.key]?.[idx] || null; });
+        return { delay: r[0], qty: r[1], attached };
+      });
+      decorated.push({ delay: newDelay, qty: vQty, attached: compAdds });
+      decorated.sort((a, b) => a.delay - b.delay);
 
-      state.scheduleRuns = decorated.map(x => [x[0], x[1]]);
-      state.companionLikes = {};
+      state.scheduleRuns = decorated.map(x => [x.delay, x.qty]);
+      resetCompanionMaps();
       decorated.forEach((x, idx) => {
-        if (x[2] !== null && x[2] > 0) state.companionLikes[idx] = x[2];
+        COMPANION_TYPES.forEach(c => {
+          if (x.attached[c.key] && x.attached[c.key] > 0) state.companions[c.key][idx] = x.attached[c.key];
+        });
       });
 
       el('modal-add').classList.add('hidden');
@@ -2212,20 +2396,24 @@
     el('edit-gap').value = gapToken(gapMins);
     el('modal-edit-gap-lbl').textContent = i ? "Gap after previous run (e.g. 30m, 1h, 45m)" : "Start in (minutes from start)";
 
-    const compOn = el('comp-enabled').checked;
-    el('edit-likes-group').style.display = compOn ? 'block' : 'none';
-
-    if (compOn) {
-      const compSid = parseInt(el('comp-sid').value.trim());
-      const compS = state.services[compSid];
-      const sMin = (compS && compS.min) ? compS.min : 10;
-      const sMax = (compS && compS.max) ? compS.max : 1e9;
-      el('edit-likes-qty').min = sMin;
-      el('edit-likes-qty').max = sMax;
-      el('edit-likes-qty').placeholder = `min ${sMin}, max ${sMax}`;
-      const curLikes = state.companionLikes[i];
-      el('edit-likes-qty').value = curLikes !== undefined ? curLikes : 0;
-    }
+    COMPANION_TYPES.forEach(c => {
+      const ids = getCompIds(c);
+      const compOn = Boolean(el(ids.enabled)?.checked);
+      const grp = el(ids.editGroup);
+      const inp = el(ids.editQty);
+      if (grp) grp.style.display = compOn ? 'block' : 'none';
+      if (compOn && inp) {
+        const compSid = parseInt((el(ids.sid)?.value || '').trim());
+        const compS = state.services[compSid];
+        const sMin = (compS && compS.min) ? compS.min : 10;
+        const sMax = (compS && compS.max) ? compS.max : 1e9;
+        inp.min = sMin;
+        inp.max = sMax;
+        inp.placeholder = `min ${sMin}, max ${sMax}`;
+        const curQty = state.companions[c.key]?.[i];
+        inp.value = curQty !== undefined ? curQty : 0;
+      }
+    });
 
     el('edit-shift-group').style.display = (i < state.scheduleRuns.length - 1) ? 'flex' : 'none';
     el('edit-shift-chk').checked = true;
@@ -2233,11 +2421,13 @@
     el('modal-edit').classList.remove('hidden');
   };
 
-  // --- ROW ACTIONS: EDIT LIKES BADGE (Exact desktop lines 1678-1705) ---
-  window.anoxyEditLikes = function (i) {
-    const compSidTxt = el('comp-sid').value.trim();
+  // --- ROW ACTIONS: EDIT & ADD COMPANION BADGES (Likes / Shares / Saves) ---
+  window.anoxyEditCompanion = function (typeKey, i) {
+    const cfg = getCompCfg(typeKey);
+    const ids = getCompIds(cfg);
+    const compSidTxt = el(ids.sid).value.trim();
     if (!compSidTxt || !/^\d+$/.test(compSidTxt)) {
-      alert("Please enter a numeric 2nd Service ID (Likes) first.");
+      alert(`Please enter a numeric ${cfg.label} Service ID first.`);
       return;
     }
     const compSid = parseInt(compSidTxt);
@@ -2245,8 +2435,8 @@
     const sMin = (compS && compS.min) ? compS.min : 10;
     const sMax = (compS && compS.max) ? compS.max : 1e9;
 
-    const curQ = state.companionLikes[i] || sMin;
-    const ans = prompt(`Run #${i + 1} Likes drop:\n\nEnter quantity (min ${sMin}, max ${sMax}, or 0 to remove):`, curQ);
+    const curQ = state.companions[cfg.key][i] || sMin;
+    const ans = prompt(`Run #${i + 1} ${cfg.label} drop:\n\nEnter quantity (min ${sMin}, max ${sMax}, or 0 to remove):`, curQ);
     if (ans === null) return;
     const q = parseInt(ans.trim());
     if (isNaN(q) || q < 0) {
@@ -2254,40 +2444,36 @@
       return;
     }
     if (q === 0) {
-      delete state.companionLikes[i];
-      log(`Removed likes drop from Run #${i + 1}.`);
+      delete state.companions[cfg.key][i];
+      log(`Removed ${cfg.label.toLowerCase()} drop from Run #${i + 1}.`);
     } else if (q < sMin) {
-      alert(`Likes quantity ${q} is below this service's minimum of ${sMin}. You cannot enter less than ${sMin} likes.`);
+      alert(`${cfg.label} quantity ${q} is below this service's minimum of ${sMin}.`);
       return;
     } else if (q > sMax) {
-      alert(`Likes quantity ${q} is above this service's maximum of ${sMax}.`);
+      alert(`${cfg.label} quantity ${q} is above this service's maximum of ${sMax}.`);
       return;
     } else {
-      state.companionLikes[i] = q;
-      log(`Set Run #${i + 1} likes drop to ${q}.`);
+      state.companions[cfg.key][i] = q;
+      log(`Set Run #${i + 1} ${cfg.label.toLowerCase()} drop to ${q}.`);
     }
     renderAutoTable();
     updateAutoStats();
   };
 
-  // --- ROW ACTIONS: ADD LIKES BADGE (Exact desktop lines 1707-1734) ---
-  window.anoxyAddLikes = function (i) {
-    let compSidTxt = el('comp-sid').value.trim();
+  window.anoxyAddCompanion = function (typeKey, i) {
+    const cfg = getCompCfg(typeKey);
+    const ids = getCompIds(cfg);
+    let compSidTxt = el(ids.sid).value.trim();
     if (!compSidTxt || !/^\d+$/.test(compSidTxt)) {
-      const defLikes = findDefaultLikesService();
-      if (defLikes) {
-        compSidTxt = String(defLikes.service);
-        el('comp-sid').value = compSidTxt;
-        el('comp-svc-info').textContent = `${defLikes.name.slice(0, 24)} (min ${defLikes.min}, max ${defLikes.max}, rate ${defLikes.rate})`;
-        if (el('comp-rate')) el('comp-rate').value = defLikes.rate;
-        const badge = el('comp-limit-badge');
-        if (badge) badge.textContent = `Min ${defLikes.min} – Max ${defLikes.max}`;
-        if (!el('comp-min-likes').value) el('comp-min-likes').placeholder = defLikes.min;
+      const defSvc = findDefaultCompanionService(cfg.key);
+      if (defSvc) {
+        compSidTxt = String(defSvc.service);
+        applyCompanionServiceToUI(cfg.key, defSvc.service, { enableBox: true });
       } else {
-        const promptSid = prompt("Enter 2nd Service ID (Likes):");
+        const promptSid = prompt(`Enter ${cfg.label} Service ID:`);
         if (!promptSid || !/^\d+$/.test(promptSid.trim())) return;
         compSidTxt = promptSid.trim();
-        el('comp-sid').value = compSidTxt;
+        el(ids.sid).value = compSidTxt;
       }
     }
     const compSid = parseInt(compSidTxt);
@@ -2295,42 +2481,96 @@
     const sMin = (compS && compS.min) ? compS.min : 10;
     const sMax = (compS && compS.max) ? compS.max : 1e9;
 
-    let defQ = parseInt(el('comp-drop-qty').value.trim()) || sMin;
+    let defQ = parseInt(el(ids.dropQty).value.trim()) || sMin;
     if (defQ < sMin) defQ = sMin;
     if (defQ > sMax) defQ = sMax;
 
-    state.companionLikes[i] = defQ;
-    el('comp-enabled').checked = true;
-    el('comp-box').style.display = 'flex';
-    log(`Added ${defQ} likes to Run #${i + 1}.`);
+    state.companions[cfg.key][i] = defQ;
+    el(ids.enabled).checked = true;
+    el(ids.box).style.display = 'flex';
+    log(`Added ${defQ} ${cfg.label.toLowerCase()} to Run #${i + 1}.`);
     renderAutoTable();
     updateAutoStats();
   };
+
+  window.anoxyEditLikes = i => window.anoxyEditCompanion('likes', i);
+  window.anoxyAddLikes = i => window.anoxyAddCompanion('likes', i);
 
   // --- ROW ACTIONS: DELETE STEP (Exact desktop lines 1910-1925) ---
   window.anoxyDeleteStep = function (i) {
     state.scheduleRuns.splice(i, 1);
-    // Shift keys down in companion map for all runs after i
-    const newMap = {};
-    for (const [k, v] of Object.entries(state.companionLikes)) {
-      const ki = parseInt(k);
-      if (ki < i) newMap[ki] = v;
-      else if (ki > i) newMap[ki - 1] = v;
-    }
-    state.companionLikes = newMap;
+    COMPANION_TYPES.forEach(c => {
+      const newMap = {};
+      for (const [k, v] of Object.entries(state.companions[c.key] || {})) {
+        const ki = parseInt(k);
+        if (ki < i) newMap[ki] = v;
+        else if (ki > i) newMap[ki - 1] = v;
+      }
+      state.companions[c.key] = newMap;
+    });
     renderAutoTable();
     updateAutoStats();
   };
 
-  // --- IMPORT / EXPORT (Exact desktop lines 1927-2005) ---
+  // --- IMPORT / EXPORT (Exact desktop lines 1927-2005 + Likes/Shares/Saves) ---
+  function readCompConfigFromUI(cfg) {
+    const ids = getCompIds(cfg);
+    return {
+      enabled: el(ids.enabled).checked,
+      sid: el(ids.sid).value.trim(),
+      rate: el(ids.rate).value.trim(),
+      total: el(ids.totalQty).value.trim(),
+      qty: el(ids.dropQty).value.trim(),
+      min: el(ids.minQty).value.trim(),
+      max: el(ids.maxQty).value.trim(),
+      duration: getSelectedPillVal(ids.durPills),
+      custom_dur: el(ids.customDur).value.trim(),
+      nruns: getSelectedPillVal(ids.runsPills),
+      custom_runs: el(ids.customRuns).value.trim(),
+      interval: getSelectedPillVal(ids.intPills),
+      custom_int: el(ids.customInt).value.trim(),
+      variance: parseInt(el(ids.varSlider).value) || 20,
+      map: state.companions[cfg.key] || {}
+    };
+  }
+
+  function applyCompConfigToUI(cfg, saved) {
+    if (!saved) return;
+    const ids = getCompIds(cfg);
+    el(ids.enabled).checked = Boolean(saved.enabled);
+    el(ids.box).style.display = saved.enabled ? 'flex' : 'none';
+    if (saved.sid) el(ids.sid).value = saved.sid;
+    if (saved.rate) el(ids.rate).value = saved.rate;
+    if (saved.total !== undefined) el(ids.totalQty).value = saved.total;
+    if (saved.qty) el(ids.dropQty).value = saved.qty;
+    if (saved.min !== undefined) el(ids.minQty).value = saved.min;
+    if (saved.max !== undefined) el(ids.maxQty).value = saved.max;
+    if (saved.duration) setSelectedPill(ids.durPills, saved.duration);
+    if (saved.custom_dur) el(ids.customDur).value = saved.custom_dur;
+    if (saved.nruns) setSelectedPill(ids.runsPills, saved.nruns);
+    if (saved.custom_runs) el(ids.customRuns).value = saved.custom_runs;
+    if (saved.interval) setSelectedPill(ids.intPills, saved.interval);
+    if (saved.custom_int) el(ids.customInt).value = saved.custom_int;
+    if (saved.variance !== undefined) {
+      el(ids.varSlider).value = saved.variance;
+      el(ids.varLbl).textContent = `±${saved.variance}%`;
+    }
+    state.companions[cfg.key] = saved.map || {};
+    if (saved.sid) applyCompanionServiceToUI(cfg.key, saved.sid, { overwriteRate: false });
+  }
+
   function exportSchedule() {
     if (!state.scheduleRuns.length) {
       alert("No schedule to export.");
       return;
     }
+    const companionsData = {};
+    COMPANION_TYPES.forEach(c => { companionsData[c.key] = readCompConfigFromUI(c); });
+    const likesData = companionsData.likes;
+
     const data = {
       app: "anoxy_schedular",
-      version: 2,
+      version: 3,
       runs: state.scheduleRuns,
       preset: state.activePreset,
       total_views: el('auto-total-views').value.trim(),
@@ -2340,18 +2580,19 @@
       custom_nruns: el('auto-custom-runs').value.trim(),
       spread: el('auto-spread-chk').checked,
       variance: parseInt(el('auto-var-slider').value) || 20,
-      comp_enabled: el('comp-enabled').checked,
-      comp_sid: el('comp-sid').value.trim(),
-      comp_total: el('comp-total-qty').value.trim(),
-      comp_qty: el('comp-drop-qty').value.trim(),
-      comp_duration: getSelectedPillVal('comp-dur-pills'),
-      comp_custom_dur: el('comp-custom-dur').value.trim(),
-      comp_nruns: getSelectedPillVal('comp-runs-pills'),
-      comp_custom_runs: el('comp-custom-runs').value.trim(),
-      comp_interval: getSelectedPillVal('comp-int-pills'),
-      comp_custom_int: el('comp-custom-int').value.trim(),
-      comp_variance: parseInt(el('comp-var-slider').value) || 20,
-      comp_map: state.companionLikes
+      comp_enabled: likesData.enabled,
+      comp_sid: likesData.sid,
+      comp_total: likesData.total,
+      comp_qty: likesData.qty,
+      comp_duration: likesData.duration,
+      comp_custom_dur: likesData.custom_dur,
+      comp_nruns: likesData.nruns,
+      comp_custom_runs: likesData.custom_runs,
+      comp_interval: likesData.interval,
+      comp_custom_int: likesData.custom_int,
+      comp_variance: likesData.variance,
+      comp_map: likesData.map,
+      companions: companionsData
     };
 
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
@@ -2374,6 +2615,7 @@
         if (!Array.isArray(data.runs)) throw new Error("Invalid schedule file format.");
 
         state.scheduleRuns = data.runs;
+        resetCompanionMaps();
         if (data.total_views) el('auto-total-views').value = data.total_views;
         if (data.duration) setSelectedPill('auto-dur-pills', data.duration);
         if (data.custom_dur) el('auto-custom-dur').value = data.custom_dur;
@@ -2384,23 +2626,23 @@
           el('auto-var-lbl').textContent = `±${data.variance}%`;
         }
 
-        if (data.comp_enabled) {
-          el('comp-enabled').checked = true;
-          el('comp-box').style.display = 'flex';
-          if (data.comp_sid) el('comp-sid').value = data.comp_sid;
-          if (data.comp_total) el('comp-total-qty').value = data.comp_total;
-          if (data.comp_qty) el('comp-drop-qty').value = data.comp_qty;
-          if (data.comp_duration) setSelectedPill('comp-dur-pills', data.comp_duration);
-          if (data.comp_custom_dur) el('comp-custom-dur').value = data.comp_custom_dur;
-          if (data.comp_nruns) setSelectedPill('comp-runs-pills', data.comp_nruns);
-          if (data.comp_custom_runs) el('comp-custom-runs').value = data.comp_custom_runs;
-          if (data.comp_interval) setSelectedPill('comp-int-pills', data.comp_interval);
-          if (data.comp_custom_int) el('comp-custom-int').value = data.comp_custom_int;
-          if (data.comp_variance !== undefined) {
-            el('comp-var-slider').value = data.comp_variance;
-            el('comp-var-lbl').textContent = `±${data.comp_variance}%`;
-          }
-          state.companionLikes = data.comp_map || {};
+        if (data.companions && typeof data.companions === 'object') {
+          COMPANION_TYPES.forEach(c => applyCompConfigToUI(c, data.companions[c.key]));
+        } else if (data.comp_enabled) {
+          applyCompConfigToUI(getCompCfg('likes'), {
+            enabled: true,
+            sid: data.comp_sid,
+            total: data.comp_total,
+            qty: data.comp_qty,
+            duration: data.comp_duration,
+            custom_dur: data.comp_custom_dur,
+            nruns: data.comp_nruns,
+            custom_runs: data.comp_custom_runs,
+            interval: data.comp_interval,
+            custom_int: data.comp_custom_int,
+            variance: data.comp_variance,
+            map: data.comp_map
+          });
         }
 
         renderAutoTable();
