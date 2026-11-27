@@ -116,7 +116,7 @@
                     <th style="width: 65px;">RATE</th>
                     <th style="width: 55px;">MIN</th>
                     <th style="width: 65px;">MAX</th>
-                    <th style="width: 245px; text-align: right;">ASSIGN</th>
+                    <th style="width: 345px; text-align: right;">ASSIGN</th>
                   </tr>
                 </thead>
                 <tbody id="order-tree-body">
@@ -341,7 +341,7 @@
                     <th style="width: 45px;">RUN</th>
                     <th style="width: 130px;">WHEN</th>
                     <th style="width: 85px;">GAP</th>
-                    <th style="width: 195px;">QTY</th>
+                    <th style="width: 225px;">QTY</th>
                     <th style="width: 75px;">TOTAL</th>
                     <th style="width: 110px;"></th>
                   </tr>
@@ -477,6 +477,12 @@
         <label class="form-label">Companion Saves Quantity (0 = remove)</label>
         <input id="edit-saves-qty" type="number" class="input-entry">
       </div>
+      <div class="form-group" id="edit-comments-group" style="display: none;">
+        <label class="form-label">Companion Comments Quantity (0 = remove)</label>
+        <input id="edit-comments-qty" type="number" class="input-entry">
+        <label class="form-label" style="margin-top: 8px;">Custom Comments for this drop (one per line, optional — overrides qty if non-empty)</label>
+        <textarea id="edit-comments-text" class="input-entry" rows="4" placeholder="Nice post!&#10;Great content!"></textarea>
+      </div>
 
       <div id="edit-shift-group" class="form-group" style="display: flex; align-items: center; gap: 6px; margin-top: 6px;">
         <label style="font-size: 11.5px; display: flex; align-items: center; gap: 6px; cursor: pointer;">
@@ -521,6 +527,12 @@
         <label class="form-label">Companion Saves Quantity (optional)</label>
         <input id="add-saves-qty" type="number" class="input-entry" placeholder="Leave empty for none">
       </div>
+      <div class="form-group" id="add-comments-group" style="display: none;">
+        <label class="form-label">Companion Comments Quantity (optional)</label>
+        <input id="add-comments-qty" type="number" class="input-entry" placeholder="Leave empty for none">
+        <label class="form-label" style="margin-top: 8px;">Custom Comments for this drop (one per line, optional — overrides qty if non-empty)</label>
+        <textarea id="add-comments-text" class="input-entry" rows="4" placeholder="Nice post!&#10;Great content!"></textarea>
+      </div>
 
       <div style="display: flex; justify-content: flex-end; gap: 6px; margin-top: 14px;">
         <button id="btn-add-cancel" class="btn-small">Cancel</button>
@@ -542,6 +554,33 @@
       <div style="display: flex; justify-content: flex-end; gap: 6px; margin-top: 14px;">
         <button id="btn-step-cancel" class="btn-small">Cancel</button>
         <button id="btn-step-save" class="btn-accent" style="padding: 5px 16px;">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- EDIT COMPANION COMMENTS DROP MODAL -->
+  <div id="modal-comment-drop" class="modal-overlay hidden">
+    <div class="modal-card" style="width: 440px;">
+      <div style="font-size: 13.5px; font-weight: 700; margin-bottom: 10px;" id="modal-comment-drop-title">Edit Comments Drop</div>
+      <div style="font-size: 11px; color: var(--muted); margin-bottom: 10px;" id="modal-comment-drop-sub"></div>
+
+      <div class="form-group">
+        <label class="form-label" id="modal-comment-drop-qty-lbl">Quantity (for non-custom comment services, or 0 to remove)</label>
+        <input id="comment-drop-qty" type="number" class="input-entry">
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" style="display: flex; justify-content: space-between; align-items: center;">
+          <span>Custom Comments (one comment per line, optional)</span>
+          <span id="comment-drop-lines-lbl" style="font-size: 10.5px; font-weight: 700; color: #0d9488; background: #ccfbf1; padding: 1px 6px; border-radius: 3px;">0 lines</span>
+        </label>
+        <textarea id="comment-drop-text" class="input-entry" rows="6" placeholder="Nice post!&#10;Love this!&#10;(Leave empty for regular numeric-quantity comments, or paste lines to override quantity)"></textarea>
+      </div>
+
+      <div style="display: flex; justify-content: flex-end; gap: 6px; margin-top: 14px;">
+        <button id="btn-comment-drop-remove" class="btn-small" style="margin-right: auto; color: var(--danger);">Remove drop</button>
+        <button id="btn-comment-drop-cancel" class="btn-small">Cancel</button>
+        <button id="btn-comment-drop-save" class="btn-accent" style="padding: 5px 16px;">Save</button>
       </div>
     </div>
   </div>

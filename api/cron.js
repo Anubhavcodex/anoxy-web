@@ -110,13 +110,17 @@ async function pollPanelOrderStatus({ api_url, api_key, order_id }) {
   return '';
 }
 
-async function placePanelOrder({ api_url, api_key, service_id, link, quantity }) {
+async function placePanelOrder({ api_url, api_key, service_id, link, quantity, comments }) {
   const payload = new URLSearchParams();
   payload.append('key', api_key);
   payload.append('action', 'add');
   payload.append('service', service_id);
   payload.append('link', link);
-  payload.append('quantity', quantity);
+  if (comments && String(comments).trim()) {
+    payload.append('comments', String(comments).trim());
+  } else {
+    payload.append('quantity', quantity);
+  }
 
   const panelResp = await postRequest(api_url, payload, false);
   let orderId = null;
@@ -175,10 +179,10 @@ async function dispatchDueSteps(targetScriptUrl) {
 
   // 2. Dispatch each due step to SMM panel
   for (const step of dueSteps) {
-    const { step_id, api_url, api_key, service_id, link, quantity } = step;
+    const { step_id, api_url, api_key, service_id, link, quantity, comments } = step;
 
     try {
-      const outcome = await placePanelOrder({ api_url, api_key, service_id, link, quantity });
+      const outcome = await placePanelOrder({ api_url, api_key, service_id, link, quantity, comments });
 
       // 3. Report result back to Google Sheet
       await postRequest(scriptUrl, {

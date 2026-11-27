@@ -23,8 +23,7 @@
       badgeBg: '#eef2fe',
       badgeClass: 'h-badge',
       keywords: ['like'],
-      exclude: ['dislike'],
-      placeholderSid: 'e.g. 102'
+      exclude: ['dislike']
     },
     {
       key: 'shares',
@@ -38,8 +37,7 @@
       badgeBg: '#e0f2fe',
       badgeClass: 's-badge',
       keywords: ['share', 'repost'],
-      exclude: [],
-      placeholderSid: 'e.g. 103'
+      exclude: []
     },
     {
       key: 'saves',
@@ -53,13 +51,39 @@
       badgeBg: '#f3e8ff',
       badgeClass: 'v-badge',
       keywords: ['save', 'bookmark'],
+      exclude: []
+    },
+    {
+      key: 'comments',
+      slotTitle: 'Pair 5th service (ride-along Comments / Custom Comments)',
+      desc: 'Drops comments (or exact custom comment lines) at the same timestamp as views.',
+      label: 'Comments',
+      singular: 'comment',
+      icon: '💬',
+      prefix: 'comment',
+      accent: '#0d9488',
+      badgeBg: '#ccfbf1',
+      badgeClass: 'c-badge',
+      keywords: ['comment'],
       exclude: [],
-      placeholderSid: 'e.g. 104'
+      supportsCustomComments: true,
+      defaultMin: 1,
+      defaultDropQty: 5
     }
   ];
 
   function getCompCfg(key) {
     return COMPANION_TYPES.find(c => c.key === key) || COMPANION_TYPES[0];
+  }
+
+  function getCompLimits(cfgOrKey, compSidTxt) {
+    const cfg = typeof cfgOrKey === 'string' ? getCompCfg(cfgOrKey) : cfgOrKey;
+    const raw = compSidTxt !== undefined && compSidTxt !== null ? String(compSidTxt).trim() : '';
+    const csid = /^\d+$/.test(raw) ? parseInt(raw) : null;
+    const compS = csid ? (state.services[csid] || state.services[raw]) : null;
+    const sMin = (compS && compS.min) ? compS.min : (cfg.defaultMin || 10);
+    const sMax = (compS && compS.max) ? compS.max : 1e9;
+    return { csid, compS, sMin, sMax };
   }
 
   function getCompIds(cfgOrKey) {
@@ -100,7 +124,8 @@
     balance: null,
     currency: 'USD',
     scheduleRuns: [],   // [ [delayMinutes, quantity], ... ]
-    companions: { likes: {}, shares: {}, saves: {} }, // { [typeKey]: { [runIndex]: quantity } }
+    companions: { likes: {}, shares: {}, saves: {}, comments: {} }, // { [typeKey]: { [runIndex]: quantity } }
+    customCommentsMap: {}, // { [runIndex]: string[] } for Custom Comments lines
     activePreset: '10k',
     plans: [],
     steps: [],
@@ -508,20 +533,41 @@
     return parseDuration(pill || '24h');
   }
 
-  // Helper: auto-detect default companion service (likes / shares / saves) from loaded services
-  function findDefaultCompanionService(typeKey = 'likes') {
-    const cfg = getCompCfg(typeKey);
-    const list = Object.values(state.services || {});
-    if (!list.length) return null;
-    const match = list.find(s => {
-      const name = (s.name || '').toLowerCase();
-      const cat = (s.category || '').toLowerCase();
-      const hay = `${name} ${cat}`;
-      const hit = cfg.keywords.some(kw => hay.includes(kw));
-      const blocked = cfg.exclude.some(ex => name.includes(ex));
-      return hit && !blocked;
-    });
-    return match || null;
+  function parseCustomCommentLines(rawText) {
+    return String(rawText || '')
+      .split(/\r?\n/)
+      .map(line => line.trim())
+      .filter(Boolean);
+  }
+
+  function isCustomCommentsService(svc) {
+    if (!svc) return false;
+    const t = (svc.type || '').toLowerCase();
+    const n = (svc.name || '').toLowerCase();
+    return t.includes('custom') || n.includes('custom comment');
+  }
+
+  function updateCommentLinesBadge() {
+    const lbl = el('comment-lines-lbl');
+    const ta = el('comment-custom-list');
+    if (!lbl || !ta) return;
+    const n = parseCustomCommentLines(ta.value).length;
+    lbl.textContent = `${n} line${n === 1 ? '' : 's'}`;
+  }
+
+  function updateCommentTypeHint(svc) {
+    const hint = el('comment-type-hint');
+    if (!hint) return;
+    if (svc && isCustomCommentsService(svc)) {
+      hint.style.color = '#0d9488';
+      hint.textContent = `✓ Panel type "${svc.type || 'Custom Comments'}" detected — paste comments above (1 line = 1 comment).`;
+    } else if (svc) {
+      hint.style.color = 'var(--muted)';
+      hint.textContent = `Service type: ${svc.type || 'Default'} — sends numeric quantity (or exact comment lines if filled above).`;
+    } else {
+      hint.style.color = 'var(--muted)';
+      hint.textContent = 'When lines are filled above, each drop sends those exact comment lines (`comments` param) matching its drop qty.';
+    }
   }
 
   function applyCompanionServiceToUI(typeKey, sid, { enableBox = false, repairIfSchedule = false, overwriteRate = false } = {}) {
@@ -542,6 +588,9 @@
       if (el(ids.svcInfo)) el(ids.svcInfo).textContent = '';
       if (el(ids.limitBadge)) el(ids.limitBadge).textContent = '';
     }
+    if (cfg.supportsCustomComments) {
+      updateCommentTypeHint(s || null);
+    }
     if (enableBox) {
       if (el(ids.enabled)) el(ids.enabled).checked = true;
       if (el(ids.box)) el(ids.box).style.display = 'flex';
@@ -555,6 +604,7 @@
 
   function resetCompanionMaps() {
     COMPANION_TYPES.forEach(c => { state.companions[c.key] = {}; });
+    state.customCommentsMap = {};
   }
 
   function rePairAllEnabledCompanions() {
@@ -809,7 +859,8 @@
           rate: parseFloat(s.rate) || 0,
           min: parseInt(s.min) || 1,
           max: parseInt(s.max) || 1e9,
-          category: s.category || ''
+          category: s.category || '',
+          type: s.type || 'Default'
         };
       });
       const count = Object.keys(state.services).length;
@@ -874,7 +925,7 @@
     let html = '';
     filtered.slice(0, 300).forEach(s => {
       const compBtns = COMPANION_TYPES.map(c =>
-        `<button class="btn-small btn-pick-comp" data-sid="${s.service}" data-ctype="${c.key}" style="padding: 2px 6px; font-size: 10px; font-weight: 600; margin-left: 3px; background: ${c.badgeBg}; color: ${c.accent};">Use ${c.label}</button>`
+        `<button class="btn-small btn-pick-comp" data-sid="${s.service}" data-ctype="${c.key}" style="padding: 2px 5px; font-size: 10px; font-weight: 600; margin-left: 3px; background: ${c.badgeBg}; color: ${c.accent};">Use ${c.label}</button>`
       ).join('');
       html += `
         <tr data-sid="${s.service}" class="service-row" style="cursor: pointer;">
@@ -1055,7 +1106,7 @@
           <div id="${ids.box}" style="display: none; margin-top: 8px; flex-direction: column; gap: 6px;">
             <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
               <span style="font-size: 11px; width: 92px;">${c.label} Service ID:</span>
-              <input id="${ids.sid}" type="text" class="input-entry" placeholder="${c.placeholderSid}" style="width: 70px;">
+              <input id="${ids.sid}" type="text" class="input-entry" style="width: 70px;">
               <span style="font-size: 11px; color: var(--muted);">Rate/1k:</span>
               <input id="${ids.rate}" type="text" class="input-entry" placeholder="Auto" style="width: 55px; padding: 3px 5px; font-size: 11px;">
               <span id="${ids.svcInfo}" style="font-size: 10.5px; color: var(--muted); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"></span>
@@ -1066,7 +1117,7 @@
               <div style="display: flex; align-items: center; gap: 6px;">
                 <input id="${ids.totalQty}" type="text" class="input-entry" placeholder="Total (e.g. 1000)" style="width: 95px; padding: 3px 6px; font-size: 11.5px;">
                 <span style="font-size: 11px; color: var(--muted);">or Qty/drop:</span>
-                <input id="${ids.dropQty}" type="text" class="input-entry" value="25" style="width: 50px; padding: 3px 6px; font-size: 11.5px;">
+                <input id="${ids.dropQty}" type="text" class="input-entry" value="${c.defaultDropQty || 25}" style="width: 50px; padding: 3px 6px; font-size: 11.5px;">
               </div>
               <div style="font-size: 10px; color: var(--muted); margin-top: 2px;">
                 Leave Total empty to use Qty/drop, or enter Total (e.g. 1000).
@@ -1145,6 +1196,26 @@
               </div>
             </div>
 
+            ${c.supportsCustomComments ? `
+              <div style="border-top: 1px dashed var(--border); padding-top: 6px; margin-top: 2px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 3px;">
+                  <span style="font-size: 10px; font-weight: 700; color: var(--muted);">CUSTOM COMMENTS POOL (OPTIONAL — 1 LINE = 1 COMMENT)</span>
+                  <span id="comment-lines-lbl" style="font-size: 10px; font-weight: 700; color: #0d9488; background: #ccfbf1; padding: 1px 6px; border-radius: 3px;">0 lines</span>
+                </div>
+                <textarea id="comment-custom-list" class="input-entry" rows="4" placeholder="Paste custom comments here, one per line...&#10;Nice post!&#10;Great content!&#10;(Leave empty to send numeric quantity only)" style="width: 100%; font-size: 11px; resize: vertical;"></textarea>
+                <div style="display: flex; align-items: center; gap: 6px; margin-top: 4px; flex-wrap: wrap;">
+                  <select id="comment-mode" class="input-entry" style="width: auto; font-size: 11px; padding: 3px 6px;">
+                    <option value="sequential">Order: Top to Bottom</option>
+                    <option value="random">Order: Random Shuffle</option>
+                  </select>
+                  <button id="btn-comment-use-count" type="button" class="btn-small" style="font-size: 10.5px; padding: 3px 8px;">Use line count as Total</button>
+                </div>
+                <div id="comment-type-hint" style="font-size: 10px; color: var(--muted); margin-top: 3px;">
+                  When lines are filled above, each drop sends those exact comment lines (\`comments\` param) matching its drop qty.
+                </div>
+              </div>
+            ` : ''}
+
             <button id="${ids.repairBtn}" class="btn-small" style="width: 100%; margin-top: 4px; padding: 5px; font-weight: 600;">
               ↻ Re-pair / Reset ${c.label} across schedule
             </button>
@@ -1174,6 +1245,7 @@
       }
       el(ids.svcInfo).textContent = '';
       el(ids.limitBadge).textContent = '';
+      if (cfg.supportsCustomComments) updateCommentTypeHint(null);
       repairIfActive();
       updateAutoStats();
     });
@@ -1182,14 +1254,11 @@
       const isChecked = e.target.checked;
       el(ids.box).style.display = isChecked ? 'flex' : 'none';
       if (isChecked) {
-        if (!el(ids.sid).value.trim()) {
-          const defSvc = findDefaultCompanionService(key);
-          if (defSvc) applyCompanionServiceToUI(key, defSvc.service, { overwriteRate: true });
-        }
         if (state.scheduleRuns.length) rePairCompanion(key, false);
         else updateAutoStats();
       } else {
         state.companions[key] = {};
+        if (cfg.supportsCustomComments) state.customCommentsMap = {};
         renderAutoTable();
         updateAutoStats();
       }
@@ -1263,6 +1332,30 @@
       el(ids.varLbl).textContent = `±${e.target.value}%`;
       repairIfActive();
     });
+
+    // Custom Comments Pool controls (only for comments companion)
+    if (cfg.supportsCustomComments) {
+      const customTa = el('comment-custom-list');
+      const modeSel = el('comment-mode');
+      const useCountBtn = el('btn-comment-use-count');
+      if (customTa) {
+        customTa.addEventListener('input', () => {
+          updateCommentLinesBadge();
+          repairIfActive();
+        });
+      }
+      if (modeSel) {
+        modeSel.addEventListener('change', repairIfActive);
+      }
+      if (useCountBtn && customTa) {
+        useCountBtn.addEventListener('click', () => {
+          const lines = parseCustomCommentLines(customTa.value);
+          el(ids.totalQty).value = lines.length ? String(lines.length) : '';
+          if (el(ids.enabled).checked && state.scheduleRuns.length) rePairCompanion(key, true);
+          else updateAutoStats();
+        });
+      }
+    }
 
     // Re-pair button
     el(ids.repairBtn).addEventListener('click', () => {
@@ -1386,11 +1479,12 @@
         const inp = el(ids.addQty);
         if (grp) grp.style.display = on ? 'block' : 'none';
         if (on && inp) {
-          const csid = parseInt((el(ids.sid)?.value || '').trim());
-          const compS = state.services[csid];
-          const sMin = (compS && compS.min) ? compS.min : 10;
+          const { sMin } = getCompLimits(c, el(ids.sid)?.value);
           inp.placeholder = `Min ${sMin} (or leave empty)`;
           inp.value = '';
+        }
+        if (c.supportsCustomComments && el('add-comments-text')) {
+          el('add-comments-text').value = '';
         }
       });
       el('modal-add').classList.remove('hidden');
@@ -1628,24 +1722,14 @@
     const ids = getCompIds(cfg);
     const lowerLabel = cfg.label.toLowerCase();
 
-    let compSidTxt = el(ids.sid).value.trim();
-    if (!compSidTxt || !/^\d+$/.test(compSidTxt)) {
-      const defSvc = findDefaultCompanionService(cfg.key);
-      if (defSvc) {
-        compSidTxt = String(defSvc.service);
-        applyCompanionServiceToUI(cfg.key, defSvc.service, { overwriteRate: false });
-      }
-    }
+    const compSidTxt = el(ids.sid).value.trim();
 
-    if (!compSidTxt && showAlerts) {
+    if ((!compSidTxt || !/^\d+$/.test(compSidTxt)) && showAlerts) {
       alert(`Enter a numeric Service ID for ${cfg.label}.`);
       return;
     }
 
-    const csid = compSidTxt && /^\d+$/.test(compSidTxt) ? parseInt(compSidTxt) : null;
-    const compS = csid ? (state.services[csid] || state.services[compSidTxt]) : null;
-    const sMin = (compS && compS.min) ? compS.min : 10;
-    const sMax = (compS && compS.max) ? compS.max : 1e9;
+    const { csid, compS, sMin, sMax } = getCompLimits(cfg, compSidTxt);
 
     // 1. Total Quantity or Qty per drop
     const totalTxt = el(ids.totalQty).value.trim();
@@ -1829,7 +1913,44 @@
     state.companions[cfg.key] = newMap;
 
     const totAssigned = Object.values(newMap).reduce((a, b) => a + b, 0);
-    log(`Paired ${cfg.label} #${compSidTxt || '?'}: ${chosenIndices.length} drops, total ${totAssigned} ${lowerLabel} (±${variancePct}% variance).`);
+
+    if (cfg.supportsCustomComments) {
+      const pool = parseCustomCommentLines(el('comment-custom-list')?.value);
+      if (pool.length > 0) {
+        const mode = el('comment-mode')?.value || 'sequential';
+        const workingPool = [...pool];
+        const shufflePool = arr => {
+          for (let m = arr.length - 1; m > 0; m--) {
+            const r = Math.floor(Math.random() * (m + 1));
+            [arr[m], arr[r]] = [arr[r], arr[m]];
+          }
+        };
+        if (mode === 'random') shufflePool(workingPool);
+
+        const cMap = {};
+        let cursor = 0;
+        chosenIndices.forEach((runIdx, idx) => {
+          const take = quantities[idx];
+          const picked = [];
+          for (let j = 0; j < take; j++) {
+            if (cursor >= workingPool.length) {
+              if (mode === 'random') shufflePool(workingPool);
+              cursor = 0;
+            }
+            picked.push(workingPool[cursor++]);
+          }
+          cMap[runIdx] = picked;
+        });
+        state.customCommentsMap = cMap;
+        const poolNote = totAssigned > pool.length ? 'pool wrapped' : (totAssigned < pool.length ? `${pool.length - totAssigned} pool lines unused` : '1:1 pool match');
+        log(`Paired Comments #${compSidTxt || '?'}: ${chosenIndices.length} drops, ${totAssigned} custom comments (${pool.length} lines, ${poolNote}).`);
+      } else {
+        state.customCommentsMap = {};
+        log(`Paired ${cfg.label} #${compSidTxt || '?'}: ${chosenIndices.length} drops, total ${totAssigned} ${lowerLabel} (±${variancePct}% variance).`);
+      }
+    } else {
+      log(`Paired ${cfg.label} #${compSidTxt || '?'}: ${chosenIndices.length} drops, total ${totAssigned} ${lowerLabel} (±${variancePct}% variance).`);
+    }
 
     renderAutoTable();
     updateAutoStats();
@@ -1864,7 +1985,14 @@
         if (!el(ids.enabled)?.checked) return '';
         const qty = state.companions[c.key]?.[i];
         if (qty !== undefined && qty !== null) {
-          return `<span class="${c.badgeClass}" title="Click to edit ${c.singular} drop" onclick="window.anoxyEditCompanion('${c.key}', ${i})">${c.icon}+${qty}</span>`;
+          const customLines = c.supportsCustomComments ? state.customCommentsMap?.[i] : null;
+          const hasCustom = customLines && customLines.length > 0;
+          const badgeTitle = hasCustom
+            ? `Click to edit custom comments (${customLines.length}): ${customLines.slice(0, 2).join(' | ')}`
+            : `Click to edit ${c.singular} drop`;
+          const safeTitle = badgeTitle.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+          const extraMark = hasCustom ? '✎' : '';
+          return `<span class="${c.badgeClass}" title="${safeTitle}" onclick="window.anoxyEditCompanion('${c.key}', ${i})">${c.icon}${extraMark}+${qty}</span>`;
         }
         return `<span class="h-add" title="Click to add ${c.singular} drop here" onclick="window.anoxyAddCompanion('${c.key}', ${i})">+${c.icon}</span>`;
       }).filter(Boolean).join(' ');
@@ -2046,10 +2174,7 @@
         alert(`Please enter a valid numeric ${c.label} Service ID.`);
         return;
       }
-      const compSid = parseInt(compSidTxt);
-      const compS = state.services[compSid];
-      const sMin = (compS && compS.min) ? compS.min : 10;
-      const sMax = (compS && compS.max) ? compS.max : 1e9;
+      const { csid: compSid, sMin, sMax } = getCompLimits(c, compSidTxt);
 
       for (const [runIdxStr, cq] of Object.entries(map)) {
         const runNum = parseInt(runIdxStr) + 1;
@@ -2096,15 +2221,20 @@
         quantity: q
       });
 
-      activeCompanions.forEach(({ compSid, map }) => {
+      activeCompanions.forEach(({ cfg, compSid, map }) => {
         if (map[i]) {
-          steps.push({
+          const stepObj = {
             step_no: steps.length + 1,
             run_at: runAt,
             service_id: compSid,
             link: link,
             quantity: map[i]
-          });
+          };
+          const customLines = cfg.supportsCustomComments ? state.customCommentsMap?.[i] : null;
+          if (customLines && customLines.length) {
+            stepObj.comments = customLines.join('\n');
+          }
+          steps.push(stepObj);
         }
       });
     });
@@ -2198,10 +2328,53 @@
   //  MODAL DIALOGS: EDIT STEP, ADD RUN, EDIT MY PLANS STEP
   // ================================================================
   let editStepIdx = -1;
+  let commentDropIdx = -1;
+
+  function updateCommentDropLinesBadge() {
+    const lbl = el('comment-drop-lines-lbl');
+    const ta = el('comment-drop-text');
+    if (!lbl || !ta) return;
+    const n = parseCustomCommentLines(ta.value).length;
+    lbl.textContent = `${n} line${n === 1 ? '' : 's'}`;
+    if (n > 0 && el('comment-drop-qty')) {
+      el('comment-drop-qty').value = n;
+    }
+  }
+
+  function openCommentDropModal(i, suggestQty) {
+    const cfg = getCompCfg('comments');
+    const ids = getCompIds(cfg);
+    const { csid: compSid, sMin, sMax } = getCompLimits(cfg, el(ids.sid)?.value);
+
+    commentDropIdx = i;
+    const curLines = state.customCommentsMap?.[i] || [];
+    const curQ = curLines.length > 0 ? curLines.length : (state.companions.comments?.[i] ?? suggestQty ?? sMin);
+    el('modal-comment-drop-title').textContent = `Run #${i + 1} — Comments`;
+    el('modal-comment-drop-sub').textContent = `Service #${compSid || '?'} limits: min ${sMin}, max ${sMax}`;
+    el('comment-drop-qty').min = 0;
+    el('comment-drop-qty').max = sMax;
+    el('comment-drop-qty').value = curQ;
+    el('comment-drop-text').value = curLines.join('\n');
+    updateCommentDropLinesBadge();
+    el('modal-comment-drop').classList.remove('hidden');
+  }
 
   function initModals() {
     // --- EDIT RUN MODAL (Exact desktop run_dialog parity lines 1736-1805) ---
     el('btn-edit-cancel').addEventListener('click', () => el('modal-edit').classList.add('hidden'));
+
+    if (el('edit-comments-text')) {
+      el('edit-comments-text').addEventListener('input', () => {
+        const lines = parseCustomCommentLines(el('edit-comments-text').value);
+        if (lines.length > 0 && el('edit-comments-qty')) el('edit-comments-qty').value = lines.length;
+      });
+    }
+    if (el('add-comments-text')) {
+      el('add-comments-text').addEventListener('input', () => {
+        const lines = parseCustomCommentLines(el('add-comments-text').value);
+        if (lines.length > 0 && el('add-comments-qty')) el('add-comments-qty').value = lines.length;
+      });
+    }
 
     el('btn-edit-save').addEventListener('click', () => {
       if (editStepIdx < 0 || editStepIdx >= state.scheduleRuns.length) return;
@@ -2228,22 +2401,29 @@
         return;
       }
 
-      // Strict validation for all enabled companion quantities (Likes, Shares, Saves)
+      // Strict validation for all enabled companion quantities (Likes, Shares, Saves, Comments)
       const compUpdates = {};
+      let updatedCustomLines = null;
       for (const c of COMPANION_TYPES) {
         const ids = getCompIds(c);
         if (!el(ids.enabled)?.checked) continue;
-        const cQty = parseInt((el(ids.editQty)?.value || '').trim()) || 0;
+        let cQty = parseInt((el(ids.editQty)?.value || '').trim()) || 0;
+        if (c.supportsCustomComments && el('edit-comments-text')) {
+          const lines = parseCustomCommentLines(el('edit-comments-text').value);
+          if (lines.length > 0) {
+            cQty = lines.length;
+            updatedCustomLines = lines;
+          } else {
+            updatedCustomLines = [];
+          }
+        }
         if (cQty > 0) {
           const compSidTxt = el(ids.sid).value.trim();
           if (!compSidTxt || !/^\d+$/.test(compSidTxt)) {
             alert(`Please enter a numeric ${c.label} Service ID first.`);
             return;
           }
-          const compSid = parseInt(compSidTxt);
-          const compS = state.services[compSid];
-          const sMin = (compS && compS.min) ? compS.min : 10;
-          const sMax = (compS && compS.max) ? compS.max : 1e9;
+          const { sMin, sMax } = getCompLimits(c, compSidTxt);
           if (cQty < sMin) {
             alert(`${c.label} quantity ${cQty} is below this service's minimum of ${sMin}. Enter 0 to remove.`);
             return;
@@ -2266,6 +2446,13 @@
         if (cQty > 0) state.companions[k][editStepIdx] = cQty;
         else delete state.companions[k][editStepIdx];
       });
+      if (updatedCustomLines !== null) {
+        if (updatedCustomLines.length > 0 && compUpdates.comments > 0) {
+          state.customCommentsMap[editStepIdx] = updatedCustomLines;
+        } else {
+          delete state.customCommentsMap[editStepIdx];
+        }
+      }
 
       if (shift) {
         for (let j = editStepIdx; j < state.scheduleRuns.length; j++) {
@@ -2276,7 +2463,7 @@
         const decorated = state.scheduleRuns.map((r, idx) => {
           const attached = {};
           COMPANION_TYPES.forEach(c => { attached[c.key] = state.companions[c.key]?.[idx] || null; });
-          return { delay: r[0], qty: r[1], attached };
+          return { delay: r[0], qty: r[1], attached, customComments: state.customCommentsMap[idx] || null };
         });
         decorated.sort((a, b) => a.delay - b.delay);
         state.scheduleRuns = decorated.map(x => [x.delay, x.qty]);
@@ -2285,6 +2472,9 @@
           COMPANION_TYPES.forEach(c => {
             if (x.attached[c.key] !== null) state.companions[c.key][idx] = x.attached[c.key];
           });
+          if (x.customComments && x.customComments.length) {
+            state.customCommentsMap[idx] = x.customComments;
+          }
         });
       }
 
@@ -2320,21 +2510,26 @@
       }
 
       const compAdds = {};
+      let addedCustomLines = null;
       for (const c of COMPANION_TYPES) {
         const ids = getCompIds(c);
         if (!el(ids.enabled)?.checked) continue;
         const txt = (el(ids.addQty)?.value || '').trim();
-        const cQty = txt ? parseInt(txt) : 0;
+        let cQty = txt ? parseInt(txt) : 0;
+        if (c.supportsCustomComments && el('add-comments-text')) {
+          const lines = parseCustomCommentLines(el('add-comments-text').value);
+          if (lines.length > 0) {
+            cQty = lines.length;
+            addedCustomLines = lines;
+          }
+        }
         if (cQty > 0) {
           const compSidTxt = el(ids.sid).value.trim();
           if (!compSidTxt || !/^\d+$/.test(compSidTxt)) {
             alert(`Please enter a numeric ${c.label} Service ID first.`);
             return;
           }
-          const compSid = parseInt(compSidTxt);
-          const compS = state.services[compSid];
-          const sMin = (compS && compS.min) ? compS.min : 10;
-          const sMax = (compS && compS.max) ? compS.max : 1e9;
+          const { sMin, sMax } = getCompLimits(c, compSidTxt);
           if (cQty < sMin) {
             alert(`${c.label} quantity ${cQty} is below service minimum (${sMin}). Minimum allowed is ${sMin}.`);
             return;
@@ -2353,9 +2548,9 @@
       const decorated = state.scheduleRuns.map((r, idx) => {
         const attached = {};
         COMPANION_TYPES.forEach(c => { attached[c.key] = state.companions[c.key]?.[idx] || null; });
-        return { delay: r[0], qty: r[1], attached };
+        return { delay: r[0], qty: r[1], attached, customComments: state.customCommentsMap[idx] || null };
       });
-      decorated.push({ delay: newDelay, qty: vQty, attached: compAdds });
+      decorated.push({ delay: newDelay, qty: vQty, attached: compAdds, customComments: addedCustomLines });
       decorated.sort((a, b) => a.delay - b.delay);
 
       state.scheduleRuns = decorated.map(x => [x.delay, x.qty]);
@@ -2364,6 +2559,9 @@
         COMPANION_TYPES.forEach(c => {
           if (x.attached[c.key] && x.attached[c.key] > 0) state.companions[c.key][idx] = x.attached[c.key];
         });
+        if (x.customComments && x.customComments.length) {
+          state.customCommentsMap[idx] = x.customComments;
+        }
       });
 
       el('modal-add').classList.add('hidden');
@@ -2373,6 +2571,68 @@
 
     // --- STEP ACTIONS MODAL (MY PLANS) ---
     el('btn-step-cancel').addEventListener('click', () => el('modal-step').classList.add('hidden'));
+
+    // --- COMMENTS DROP MODAL (Per-run Custom Comments + Qty) ---
+    if (el('comment-drop-text')) {
+      el('comment-drop-text').addEventListener('input', updateCommentDropLinesBadge);
+    }
+    if (el('btn-comment-drop-cancel')) {
+      el('btn-comment-drop-cancel').addEventListener('click', () => el('modal-comment-drop').classList.add('hidden'));
+    }
+    if (el('btn-comment-drop-remove')) {
+      el('btn-comment-drop-remove').addEventListener('click', () => {
+        if (commentDropIdx >= 0) {
+          delete state.companions.comments[commentDropIdx];
+          delete state.customCommentsMap[commentDropIdx];
+          log(`Removed comments drop from Run #${commentDropIdx + 1}.`);
+          renderAutoTable();
+          updateAutoStats();
+        }
+        el('modal-comment-drop').classList.add('hidden');
+      });
+    }
+    if (el('btn-comment-drop-save')) {
+      el('btn-comment-drop-save').addEventListener('click', () => {
+        if (commentDropIdx < 0) return;
+        const cfg = getCompCfg('comments');
+        const ids = getCompIds(cfg);
+        const { sMin, sMax } = getCompLimits(cfg, el(ids.sid)?.value);
+
+        const lines = parseCustomCommentLines(el('comment-drop-text').value);
+        const q = lines.length > 0 ? lines.length : parseInt(el('comment-drop-qty').value.trim());
+
+        if (isNaN(q) || q < 0) {
+          alert('Quantity must be 0 or a positive whole number.');
+          return;
+        }
+        if (q === 0) {
+          delete state.companions.comments[commentDropIdx];
+          delete state.customCommentsMap[commentDropIdx];
+          log(`Removed comments drop from Run #${commentDropIdx + 1}.`);
+        } else if (q < sMin) {
+          alert(`Comments quantity ${q} is below this service's minimum of ${sMin}.`);
+          return;
+        } else if (q > sMax) {
+          alert(`Comments quantity ${q} is above this service's maximum of ${sMax}.`);
+          return;
+        } else {
+          state.companions.comments[commentDropIdx] = q;
+          if (lines.length > 0) {
+            state.customCommentsMap[commentDropIdx] = lines;
+            log(`Set Run #${commentDropIdx + 1} comments drop to ${q} custom line(s).`);
+          } else {
+            delete state.customCommentsMap[commentDropIdx];
+            log(`Set Run #${commentDropIdx + 1} comments drop to ${q}.`);
+          }
+          el(ids.enabled).checked = true;
+          el(ids.box).style.display = 'flex';
+        }
+
+        el('modal-comment-drop').classList.add('hidden');
+        renderAutoTable();
+        updateAutoStats();
+      });
+    }
   }
 
   // --- ROW ACTIONS: EDIT STEP MODAL POPUP ---
@@ -2403,15 +2663,15 @@
       const inp = el(ids.editQty);
       if (grp) grp.style.display = compOn ? 'block' : 'none';
       if (compOn && inp) {
-        const compSid = parseInt((el(ids.sid)?.value || '').trim());
-        const compS = state.services[compSid];
-        const sMin = (compS && compS.min) ? compS.min : 10;
-        const sMax = (compS && compS.max) ? compS.max : 1e9;
+        const { sMin, sMax } = getCompLimits(c, el(ids.sid)?.value);
         inp.min = sMin;
         inp.max = sMax;
         inp.placeholder = `min ${sMin}, max ${sMax}`;
         const curQty = state.companions[c.key]?.[i];
         inp.value = curQty !== undefined ? curQty : 0;
+        if (c.supportsCustomComments && el('edit-comments-text')) {
+          el('edit-comments-text').value = (state.customCommentsMap?.[i] || []).join('\n');
+        }
       }
     });
 
@@ -2421,7 +2681,7 @@
     el('modal-edit').classList.remove('hidden');
   };
 
-  // --- ROW ACTIONS: EDIT & ADD COMPANION BADGES (Likes / Shares / Saves) ---
+  // --- ROW ACTIONS: EDIT & ADD COMPANION BADGES (Likes / Shares / Saves / Comments) ---
   window.anoxyEditCompanion = function (typeKey, i) {
     const cfg = getCompCfg(typeKey);
     const ids = getCompIds(cfg);
@@ -2430,10 +2690,11 @@
       alert(`Please enter a numeric ${cfg.label} Service ID first.`);
       return;
     }
-    const compSid = parseInt(compSidTxt);
-    const compS = state.services[compSid];
-    const sMin = (compS && compS.min) ? compS.min : 10;
-    const sMax = (compS && compS.max) ? compS.max : 1e9;
+    if (cfg.supportsCustomComments) {
+      openCommentDropModal(i);
+      return;
+    }
+    const { sMin, sMax } = getCompLimits(cfg, compSidTxt);
 
     const curQ = state.companions[cfg.key][i] || sMin;
     const ans = prompt(`Run #${i + 1} ${cfg.label} drop:\n\nEnter quantity (min ${sMin}, max ${sMax}, or 0 to remove):`, curQ);
@@ -2465,25 +2726,21 @@
     const ids = getCompIds(cfg);
     let compSidTxt = el(ids.sid).value.trim();
     if (!compSidTxt || !/^\d+$/.test(compSidTxt)) {
-      const defSvc = findDefaultCompanionService(cfg.key);
-      if (defSvc) {
-        compSidTxt = String(defSvc.service);
-        applyCompanionServiceToUI(cfg.key, defSvc.service, { enableBox: true });
-      } else {
-        const promptSid = prompt(`Enter ${cfg.label} Service ID:`);
-        if (!promptSid || !/^\d+$/.test(promptSid.trim())) return;
-        compSidTxt = promptSid.trim();
-        el(ids.sid).value = compSidTxt;
-      }
+      const promptSid = prompt(`Enter ${cfg.label} Service ID:`);
+      if (!promptSid || !/^\d+$/.test(promptSid.trim())) return;
+      compSidTxt = promptSid.trim();
+      applyCompanionServiceToUI(cfg.key, compSidTxt, { enableBox: true, overwriteRate: false });
     }
-    const compSid = parseInt(compSidTxt);
-    const compS = state.services[compSid];
-    const sMin = (compS && compS.min) ? compS.min : 10;
-    const sMax = (compS && compS.max) ? compS.max : 1e9;
+    const { sMin, sMax } = getCompLimits(cfg, compSidTxt);
 
     let defQ = parseInt(el(ids.dropQty).value.trim()) || sMin;
     if (defQ < sMin) defQ = sMin;
     if (defQ > sMax) defQ = sMax;
+
+    if (cfg.supportsCustomComments) {
+      openCommentDropModal(i, defQ);
+      return;
+    }
 
     state.companions[cfg.key][i] = defQ;
     el(ids.enabled).checked = true;
@@ -2508,14 +2765,21 @@
       }
       state.companions[c.key] = newMap;
     });
+    const newCustomMap = {};
+    for (const [k, v] of Object.entries(state.customCommentsMap || {})) {
+      const ki = parseInt(k);
+      if (ki < i) newCustomMap[ki] = v;
+      else if (ki > i) newCustomMap[ki - 1] = v;
+    }
+    state.customCommentsMap = newCustomMap;
     renderAutoTable();
     updateAutoStats();
   };
 
-  // --- IMPORT / EXPORT (Exact desktop lines 1927-2005 + Likes/Shares/Saves) ---
+  // --- IMPORT / EXPORT (Exact desktop lines 1927-2005 + Likes/Shares/Saves/Comments) ---
   function readCompConfigFromUI(cfg) {
     const ids = getCompIds(cfg);
-    return {
+    const out = {
       enabled: el(ids.enabled).checked,
       sid: el(ids.sid).value.trim(),
       rate: el(ids.rate).value.trim(),
@@ -2532,6 +2796,12 @@
       variance: parseInt(el(ids.varSlider).value) || 20,
       map: state.companions[cfg.key] || {}
     };
+    if (cfg.supportsCustomComments) {
+      out.custom_list = el('comment-custom-list')?.value || '';
+      out.custom_mode = el('comment-mode')?.value || 'sequential';
+      out.custom_comments_map = state.customCommentsMap || {};
+    }
+    return out;
   }
 
   function applyCompConfigToUI(cfg, saved) {
@@ -2556,6 +2826,12 @@
       el(ids.varLbl).textContent = `±${saved.variance}%`;
     }
     state.companions[cfg.key] = saved.map || {};
+    if (cfg.supportsCustomComments) {
+      if (el('comment-custom-list') && saved.custom_list !== undefined) el('comment-custom-list').value = saved.custom_list;
+      if (el('comment-mode') && saved.custom_mode) el('comment-mode').value = saved.custom_mode;
+      updateCommentLinesBadge();
+      state.customCommentsMap = saved.custom_comments_map || {};
+    }
     if (saved.sid) applyCompanionServiceToUI(cfg.key, saved.sid, { overwriteRate: false });
   }
 
@@ -3049,7 +3325,10 @@
       const isValidOrder = /^\d+$/.test(rawOrder);
       const orderCell = isValidOrder ? rawOrder : (s.status === 'sent' && rawOrder ? rawOrder : '');
       const provStatus = s.status === 'sent' ? (getStepProviderStatus(s) || 'Checking...') : '';
-      const noteCell = s.error || (!isValidOrder && rawOrder && s.status !== 'sent' ? rawOrder : '');
+      const customLinesList = s.comments ? String(s.comments).trim().split(/\r?\n/).filter(Boolean) : [];
+      const customTag = customLinesList.length ? `Custom (${customLinesList.length}): ${customLinesList[0].slice(0, 22)}${customLinesList.length > 1 ? '...' : ''}` : '';
+      const noteCell = s.error || (!isValidOrder && rawOrder && s.status !== 'sent' ? rawOrder : customTag);
+      const noteTitle = customLinesList.length ? customLinesList.join(' | ').replace(/&/g, '&amp;').replace(/"/g, '&quot;') : '';
 
       html += `
         <tr data-stepid="${sid}" class="step-row ${String(state.selectedStepId) === String(sid) ? 'selected' : ''}" style="cursor: pointer; color: ${statusColor};">
@@ -3060,7 +3339,7 @@
           <td style="font-weight: 700;">${s.status}</td>
           <td>${provStatus}</td>
           <td>${orderCell}</td>
-          <td>${noteCell}</td>
+          <td title="${noteTitle}">${noteCell}</td>
         </tr>
       `;
     });

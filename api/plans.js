@@ -49,6 +49,7 @@ module.exports = async (req, res) => {
         service_id: s.service_id || service_id,
         link: s.link || link,
         quantity: s.quantity,
+        comments: s.comments || '',
         status: 'pending',
         order_id: '',
         provider_status: '',
@@ -67,7 +68,8 @@ module.exports = async (req, res) => {
               api_key,
               service_id: st.service_id,
               link: st.link,
-              quantity: st.quantity
+              quantity: st.quantity,
+              comments: st.comments
             });
             st.status = outcome.status;
             st.order_id = outcome.orderId || '';
