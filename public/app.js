@@ -589,12 +589,11 @@
 
   // --- TAB 1: SETUP ---
   function initSetup() {
+    localStorage.removeItem('anoxy_script_url');
     const savedUrl = localStorage.getItem('anoxy_panel_url');
     const savedKey = localStorage.getItem('anoxy_panel_key');
-    const savedScript = localStorage.getItem('anoxy_script_url');
     if (savedUrl) el('setup-url').value = savedUrl;
     if (savedKey) el('setup-key').value = savedKey;
-    if (savedScript && el('setup-script-url')) el('setup-script-url').value = savedScript;
 
     el('setup-show-key').addEventListener('change', e => {
       el('setup-key').type = e.target.checked ? 'text' : 'password';
@@ -613,11 +612,6 @@
       }
       localStorage.setItem('anoxy_panel_url', url);
       localStorage.setItem('anoxy_panel_key', key);
-      if (el('setup-script-url')) {
-        const sUrl = el('setup-script-url').value.trim();
-        if (sUrl) localStorage.setItem('anoxy_script_url', sUrl);
-        else localStorage.removeItem('anoxy_script_url');
-      }
       connectPanel(url, key);
     });
   }
@@ -1963,7 +1957,6 @@
   async function savePlanToCloud(name, sid, link, steps) {
     const url = localStorage.getItem('anoxy_panel_url');
     const key = localStorage.getItem('anoxy_panel_key');
-    const scriptUrl = localStorage.getItem('anoxy_script_url') || '';
 
     if (!url || !key) {
       alert('Please configure Panel API credentials in Setup first.');
@@ -1988,7 +1981,6 @@
           link: link,
           api_url: url,
           api_key: key,
-          script_url: scriptUrl,
           steps: steps
         })
       });
@@ -2535,7 +2527,6 @@
           return;
         }
 
-        const scriptUrl = localStorage.getItem('anoxy_script_url') || '';
         try {
           await fetch('/api/plans', {
             method: 'POST',
@@ -2546,8 +2537,7 @@
               service_id: sid,
               link: plan.link,
               quantity: q,
-              run_at: Date.now() + mins * 60000,
-              script_url: scriptUrl
+              run_at: Date.now() + mins * 60000
             })
           });
           log(`Added step (${q}) to plan ${plan.id}.`);
@@ -2574,12 +2564,11 @@
   }
 
   async function updateCloudStep(stepId, fields) {
-    const scriptUrl = localStorage.getItem('anoxy_script_url') || '';
     try {
       await fetch('/api/plans', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ step_id: stepId, script_url: scriptUrl, ...fields })
+        body: JSON.stringify({ step_id: stepId, ...fields })
       });
       log(`Step updated in 24/7 Cloud.`);
       await refreshPlans(false);
@@ -2589,14 +2578,13 @@
   }
 
   async function shiftLaterSteps(baseStep, deltaMs) {
-    const scriptUrl = localStorage.getItem('anoxy_script_url') || '';
     const planSteps = state.steps.filter(s => String(s.plan_id) === String(baseStep.plan_id) && s.status === 'pending');
     const toShift = planSteps.filter(s => Number(s.step_no) >= Number(baseStep.step_no));
     for (const s of toShift) {
       await fetch('/api/plans', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ step_id: s.id, run_at: Number(s.run_at) + deltaMs, script_url: scriptUrl })
+        body: JSON.stringify({ step_id: s.id, run_at: Number(s.run_at) + deltaMs })
       });
     }
     log(`Shifted ${toShift.length} step(s) in cloud.`);
@@ -2605,9 +2593,7 @@
 
   async function triggerCloudCronDispatch() {
     try {
-      const scriptUrl = localStorage.getItem('anoxy_script_url') || '';
-      const qs = scriptUrl ? `?script_url=${encodeURIComponent(scriptUrl)}` : '';
-      const res = await fetch('/api/cron' + qs);
+      const res = await fetch('/api/cron');
       const d = await res.json();
       if (d && Array.isArray(d.results) && d.results.length > 0) {
         d.results.forEach(r => {
@@ -2699,11 +2685,10 @@
       }
 
       if (sheetUpdates.length > 0) {
-        const scriptUrl = localStorage.getItem('anoxy_script_url') || '';
         fetch('/api/plans', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'update_statuses', updates: sheetUpdates, script_url: scriptUrl })
+          body: JSON.stringify({ action: 'update_statuses', updates: sheetUpdates })
         }).catch(() => {});
       }
     } finally {
@@ -2713,9 +2698,7 @@
 
   async function refreshPlans(alsoPollStatus = true) {
     try {
-      const scriptUrl = localStorage.getItem('anoxy_script_url') || '';
-      const qs = scriptUrl ? `?script_url=${encodeURIComponent(scriptUrl)}` : '';
-      const res = await fetch('/api/plans' + qs);
+      const res = await fetch('/api/plans');
       const data = await res.json();
       state.plans = data.plans || [];
       state.steps = (data.steps || []).map(s => {
@@ -2858,12 +2841,11 @@
     }
     if (!confirm('Cancel all pending steps of this plan?\nSteps already sent to the panel cannot be recalled from here.')) return;
 
-    const scriptUrl = localStorage.getItem('anoxy_script_url') || '';
     try {
       await fetch('/api/plans', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'cancel_plan', plan_id: state.selectedPlanId, script_url: scriptUrl })
+        body: JSON.stringify({ action: 'cancel_plan', plan_id: state.selectedPlanId })
       });
       log(`Plan ${state.selectedPlanId} cancelled.`);
       await refreshPlans(false);
@@ -2882,12 +2864,11 @@
       alert('Still active: Cancel the plan first, or wait until it finishes.');
       return;
     }
-    const scriptUrl = localStorage.getItem('anoxy_script_url') || '';
     try {
       await fetch('/api/plans', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'remove_plan', plan_id: state.selectedPlanId, script_url: scriptUrl })
+        body: JSON.stringify({ action: 'remove_plan', plan_id: state.selectedPlanId })
       });
       state.selectedPlanId = null;
       await refreshPlans(false);
