@@ -66,9 +66,7 @@
       badgeClass: 'c-badge',
       keywords: ['comment'],
       exclude: [],
-      supportsCustomComments: true,
-      defaultMin: 1,
-      defaultDropQty: 5
+      supportsCustomComments: true
     }
   ];
 
@@ -80,9 +78,9 @@
     const cfg = typeof cfgOrKey === 'string' ? getCompCfg(cfgOrKey) : cfgOrKey;
     const raw = compSidTxt !== undefined && compSidTxt !== null ? String(compSidTxt).trim() : '';
     const csid = /^\d+$/.test(raw) ? parseInt(raw) : null;
-    const compS = csid ? (state.services[csid] || state.services[raw]) : null;
-    const sMin = (compS && compS.min) ? compS.min : (cfg.defaultMin || 10);
-    const sMax = (compS && compS.max) ? compS.max : 1e9;
+    const compS = csid ? (state.services[csid] || state.services[String(csid)]) : null;
+    const sMin = (compS && compS.min) ? Math.max(1, parseInt(compS.min) || 1) : 10;
+    const sMax = (compS && compS.max) ? Math.max(sMin, parseInt(compS.max) || 1e9) : 1e9;
     return { csid, compS, sMin, sMax };
   }
 
@@ -578,14 +576,29 @@
       el(ids.sid).value = sid;
     }
     if (s) {
-      if (el(ids.svcInfo)) el(ids.svcInfo).textContent = `${s.name.slice(0, 24)} (min ${s.min}, max ${s.max}, rate ${s.rate})`;
+      if (el(ids.svcInfo)) {
+        el(ids.svcInfo).style.color = 'var(--muted)';
+        el(ids.svcInfo).textContent = `${s.name.slice(0, 24)} (min ${s.min}, max ${s.max}, rate ${s.rate})`;
+      }
       if (el(ids.limitBadge)) el(ids.limitBadge).textContent = `Min ${s.min} – Max ${s.max}`;
-      if (el(ids.minQty) && !el(ids.minQty).value) el(ids.minQty).placeholder = s.min;
+      if (el(ids.minQty)) {
+        el(ids.minQty).placeholder = s.min;
+        const curUmin = parseInt((el(ids.minQty).value || '').trim());
+        if (!isNaN(curUmin) && curUmin < s.min) el(ids.minQty).value = s.min;
+      }
       if (el(ids.rate) && (overwriteRate || !el(ids.rate).value)) el(ids.rate).value = s.rate;
-      const curDropQ = parseInt((el(ids.dropQty)?.value || '').trim()) || 0;
-      if (el(ids.dropQty) && curDropQ < s.min) el(ids.dropQty).value = s.min;
+      if (el(ids.dropQty)) {
+        el(ids.dropQty).placeholder = `Min ${s.min}`;
+        const curDropQ = parseInt((el(ids.dropQty).value || '').trim()) || 0;
+        if (overwriteRate || !el(ids.dropQty).value.trim() || curDropQ < s.min) {
+          el(ids.dropQty).value = s.min;
+        }
+      }
     } else {
-      if (el(ids.svcInfo)) el(ids.svcInfo).textContent = '';
+      if (el(ids.svcInfo)) {
+        el(ids.svcInfo).style.color = 'var(--muted)';
+        el(ids.svcInfo).textContent = '';
+      }
       if (el(ids.limitBadge)) el(ids.limitBadge).textContent = '';
     }
     if (cfg.supportsCustomComments) {
@@ -630,7 +643,26 @@
     try {
       const cached = localStorage.getItem('anoxy_cached_services');
       if (cached) {
-        state.services = JSON.parse(cached);
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed)) {
+          state.services = {};
+          parsed.forEach(item => {
+            if (Array.isArray(item) && item.length >= 5) {
+              const sid = parseInt(item[0]);
+              state.services[sid] = {
+                service: sid,
+                name: item[1] || '',
+                rate: parseFloat(item[2]) || 0,
+                min: Math.max(1, parseInt(item[3]) || 1),
+                max: Math.max(1, parseInt(item[4]) || 1e9),
+                category: item[5] || '',
+                type: item[6] || 'Default'
+              };
+            }
+          });
+        } else if (parsed && typeof parsed === 'object') {
+          state.services = parsed;
+        }
         state.currency = localStorage.getItem('anoxy_cached_currency') || 'USD';
         renderServicesTable();
       }
@@ -801,6 +833,8 @@
     });
   }
 
+  let activeConnectPromise = null;
+
   function autoConnectPanel() {
     let url = (localStorage.getItem('anoxy_panel_url') || '').trim();
     const key = (localStorage.getItem('anoxy_panel_key') || '').trim();
@@ -808,102 +842,126 @@
       if (!/^https?:\/\//i.test(url)) {
         url = 'https://' + url;
       }
-      connectPanel(url, key);
+      return connectPanel(url, key);
+    }
+    return Promise.resolve();
+  }
+
+  async function ensurePanelServicesLoaded() {
+    if (activeConnectPromise) {
+      await activeConnectPromise;
+      return;
+    }
+    if (Object.keys(state.services || {}).length === 0) {
+      await autoConnectPanel();
     }
   }
 
-  async function connectPanel(url, key) {
-    el('setup-status').textContent = 'Connecting...';
-    el('setup-status').style.color = 'var(--warning)';
-    el('conn-dot').style.color = 'var(--warning)';
-    el('topbar-title').textContent = 'Connecting...';
-    el('topbar-sub').textContent = '';
+  function connectPanel(url, key) {
+    activeConnectPromise = (async () => {
+      el('setup-status').textContent = 'Connecting...';
+      el('setup-status').style.color = 'var(--warning)';
+      el('conn-dot').style.color = 'var(--warning)';
+      el('topbar-title').textContent = 'Connecting...';
+      el('topbar-sub').textContent = '';
 
-    try {
-      const [balRes, svcRes] = await Promise.all([
-        fetch('/api/panel', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'balance', api_url: url, apiUrl: url, api_key: key, apiKey: key })
-        }),
-        fetch('/api/panel', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'services', api_url: url, apiUrl: url, api_key: key, apiKey: key })
-        })
-      ]);
-
-      const balData = await balRes.json();
-      const svcData = await svcRes.json();
-
-      if (balData && balData.error) {
-        throw new Error(balData.error);
-      }
-      if (svcData && svcData.error) {
-        throw new Error(svcData.error);
-      }
-
-      state.balance = isNaN(parseFloat(balData.balance)) ? 0 : parseFloat(balData.balance);
-      state.currency = balData.currency || 'USD';
-
-      if (!Array.isArray(svcData)) {
-        throw new Error('Panel returned invalid services format (expected array)');
-      }
-
-      state.services = {};
-      svcData.forEach(s => {
-        const sid = parseInt(s.service);
-        state.services[sid] = {
-          service: sid,
-          name: s.name,
-          rate: parseFloat(s.rate) || 0,
-          min: parseInt(s.min) || 1,
-          max: parseInt(s.max) || 1e9,
-          category: s.category || '',
-          type: s.type || 'Default'
-        };
-      });
-      const count = Object.keys(state.services).length;
-      el('setup-status').textContent = `Connected (${count} services, balance: ${state.balance} ${state.currency})`;
-      el('setup-status').style.color = 'var(--success)';
-      el('conn-dot').style.color = 'var(--success)';
-      el('topbar-title').textContent = 'Connected';
-      el('topbar-sub').textContent = `${count} services · balance ${state.balance} ${state.currency}`;
-      log(`Connected to panel. Loaded ${count} services. Balance: ${state.balance} ${state.currency}.`);
-      renderServicesTable();
-
-      // Cache services for instant offline / startup retrieval
       try {
-        localStorage.setItem('anoxy_cached_services', JSON.stringify(state.services));
-        localStorage.setItem('anoxy_cached_currency', state.currency || 'USD');
-      } catch (e) {}
+        const [balRes, svcRes] = await Promise.all([
+          fetch('/api/panel', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'balance', api_url: url, apiUrl: url, api_key: key, apiKey: key })
+          }),
+          fetch('/api/panel', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'services', api_url: url, apiUrl: url, api_key: key, apiKey: key })
+          })
+        ]);
 
-      // Update info labels and rates if SIDs are already entered
-      const sid = parseInt(el('auto-sid').value.trim());
-      if (sid && state.services[sid]) {
-        const s = state.services[sid];
-        const info = `min ${s.min}  max ${s.max}  rate ${s.rate} per 1000`;
-        el('auto-svc-info').textContent = info;
-        el('order-svc-info').textContent = info;
-        if (el('auto-rate') && !el('auto-rate').value) el('auto-rate').value = s.rate;
-      }
-      COMPANION_TYPES.forEach(c => {
-        const ids = getCompIds(c);
-        const csid = parseInt((el(ids.sid)?.value || '').trim());
-        if (csid && state.services[csid]) {
-          applyCompanionServiceToUI(c.key, csid, { overwriteRate: false });
+        const balData = await balRes.json();
+        const svcData = await svcRes.json();
+
+        if (balData && balData.error) {
+          throw new Error(balData.error);
         }
-      });
-      updateAutoStats();
-      refreshPlans(true);
-    } catch (err) {
-      el('setup-status').textContent = 'Connection failed: ' + err.message;
-      el('setup-status').style.color = 'var(--danger)';
-      el('conn-dot').style.color = 'var(--danger)';
-      el('topbar-title').textContent = 'Connection failed';
-      el('topbar-sub').textContent = err.message;
-      log('Panel connection failed: ' + err.message);
-    }
+        if (svcData && svcData.error) {
+          throw new Error(svcData.error);
+        }
+
+        state.balance = isNaN(parseFloat(balData.balance)) ? 0 : parseFloat(balData.balance);
+        state.currency = balData.currency || 'USD';
+
+        if (!Array.isArray(svcData)) {
+          throw new Error('Panel returned invalid services format (expected array)');
+        }
+
+        state.services = {};
+        const compactCache = [];
+        svcData.forEach(s => {
+          const sid = parseInt(s.service);
+          if (isNaN(sid)) return;
+          const minParsed = Math.max(1, parseInt(String(s.min ?? '1').replace(/[^\d]/g, '')) || 1);
+          const maxParsed = Math.max(minParsed, parseInt(String(s.max ?? '1000000000').replace(/[^\d]/g, '')) || 1e9);
+          const rateParsed = parseFloat(s.rate) || 0;
+          const svcObj = {
+            service: sid,
+            name: s.name || '',
+            rate: rateParsed,
+            min: minParsed,
+            max: maxParsed,
+            category: s.category || '',
+            type: s.type || 'Default'
+          };
+          state.services[sid] = svcObj;
+          compactCache.push([sid, svcObj.name, rateParsed, minParsed, maxParsed, svcObj.category, svcObj.type]);
+        });
+        const count = Object.keys(state.services).length;
+        el('setup-status').textContent = `Connected (${count} services, balance: ${state.balance} ${state.currency})`;
+        el('setup-status').style.color = 'var(--success)';
+        el('conn-dot').style.color = 'var(--success)';
+        el('topbar-title').textContent = 'Connected';
+        el('topbar-sub').textContent = `${count} services · balance ${state.balance} ${state.currency}`;
+        log(`Connected to panel. Loaded ${count} services. Balance: ${state.balance} ${state.currency}.`);
+        renderServicesTable();
+
+        // Cache services compactly for instant startup retrieval
+        try {
+          localStorage.setItem('anoxy_cached_services', JSON.stringify(compactCache));
+          localStorage.setItem('anoxy_cached_currency', state.currency || 'USD');
+        } catch (e) {}
+
+        // Update info labels and rates if SIDs are already entered
+        const sid = parseInt(el('auto-sid').value.trim());
+        if (sid && state.services[sid]) {
+          const s = state.services[sid];
+          const info = `min ${s.min}  max ${s.max}  rate ${s.rate} per 1000`;
+          el('auto-svc-info').textContent = info;
+          el('order-svc-info').textContent = info;
+          if (el('auto-rate') && !el('auto-rate').value) el('auto-rate').value = s.rate;
+        }
+        COMPANION_TYPES.forEach(c => {
+          const ids = getCompIds(c);
+          const csid = parseInt((el(ids.sid)?.value || '').trim());
+          if (csid && state.services[csid]) {
+            applyCompanionServiceToUI(c.key, csid, { overwriteRate: false });
+          }
+        });
+        if (state.scheduleRuns.length) rePairAllEnabledCompanions();
+        else updateAutoStats();
+        refreshPlans(true);
+      } catch (err) {
+        el('setup-status').textContent = 'Connection failed: ' + err.message;
+        el('setup-status').style.color = 'var(--danger)';
+        el('conn-dot').style.color = 'var(--danger)';
+        el('topbar-title').textContent = 'Connection failed';
+        el('topbar-sub').textContent = err.message;
+        log('Panel connection failed: ' + err.message);
+      } finally {
+        activeConnectPromise = null;
+      }
+    })();
+    return activeConnectPromise;
   }
 
   function renderServicesTable() {
@@ -1117,7 +1175,7 @@
               <div style="display: flex; align-items: center; gap: 6px;">
                 <input id="${ids.totalQty}" type="text" class="input-entry" placeholder="Total (e.g. 1000)" style="width: 95px; padding: 3px 6px; font-size: 11.5px;">
                 <span style="font-size: 11px; color: var(--muted);">or Qty/drop:</span>
-                <input id="${ids.dropQty}" type="text" class="input-entry" value="${c.defaultDropQty || 25}" style="width: 50px; padding: 3px 6px; font-size: 11.5px;">
+                <input id="${ids.dropQty}" type="text" class="input-entry" value="" placeholder="Auto (min)" style="width: 72px; padding: 3px 6px; font-size: 11.5px;">
               </div>
               <div style="font-size: 10px; color: var(--muted); margin-top: 2px;">
                 Leave Total empty to use Qty/drop, or enter Total (e.g. 1000).
@@ -1554,9 +1612,12 @@
       return;
     }
     const tot = parseInt(totTxt);
-    // Desktop auto-scale formula (lines 1290-1292)
-    const runs = Math.max(4, Math.round(tot / 155));
-    const hours = Math.max(1, Math.round(runs * 22.1 / 60));
+    const sid = parseInt((el('auto-sid')?.value || '').trim());
+    const s = sid ? (state.services[sid] || state.services[String(sid)]) : null;
+    const minQ = (s && s.min) ? Math.max(1, parseInt(s.min) || 1) : 1;
+    const maxRunsByMin = Math.max(1, Math.floor(tot / minQ));
+    const runs = Math.min(maxRunsByMin, Math.max(1, Math.round(tot / Math.max(155, minQ))));
+    const hours = runs === 1 ? 1 : Math.max(1, Math.round(runs * 22.1 / 60));
     const dur = `${hours}h`;
 
     if (['6h', '12h', '24h', '48h'].includes(dur)) {
@@ -1590,7 +1651,7 @@
   // ================================================================
   //  generateAutoSchedule — Exact desktop generate_auto parity (lines 1508-1594)
   // ================================================================
-  function generateAutoSchedule() {
+  async function generateAutoSchedule() {
     // 1. Service validation (lines 1509-1512)
     const sidTxt = el('auto-sid').value.trim();
     if (!sidTxt || !/^\d+$/.test(sidTxt)) {
@@ -1598,6 +1659,9 @@
       return;
     }
     const sid = parseInt(sidTxt);
+    if (!state.services[sid] && !state.services[String(sid)]) {
+      await ensurePanelServicesLoaded();
+    }
 
     // 2. Link validation — strictly enforce https:// (desktop parity lines 1514-1516)
     const link = el('auto-link').value.trim();
@@ -1658,8 +1722,15 @@
     }
 
     // 7. Check total against service limits (lines 1550-1554)
-    const s = state.services[sid];
-    if (total !== null && s && !(s.min <= total && total <= s.max)) {
+    const s = state.services[sid] || state.services[String(sid)];
+    if (!s) {
+      const hasSvcs = Object.keys(state.services || {}).length > 0;
+      alert(hasSvcs
+        ? `Service #${sid} was not found in your connected panel. Pick a valid Service ID on the New order tab.`
+        : `Panel services are not loaded yet. Connect on Setup first so service min/max limits are used.`);
+      return;
+    }
+    if (total !== null && !(s.min <= total && total <= s.max)) {
       alert(`Total ${total} is outside this service's limits (${s.min} to ${s.max}).`);
       return;
     }
@@ -1681,8 +1752,8 @@
     // 10. Generate runs (lines 1566-1585)
     const variancePct = parseInt(el('auto-var-slider').value) || 20;
     const spread = el('auto-spread-chk').checked;
-    const minQ = s ? s.min : 1;
-    const maxQ = s ? s.max : 1e9;
+    const minQ = Math.max(1, s.min || 1);
+    const maxQ = Math.max(minQ, s.max || 1e9);
 
     let runs;
     try {
@@ -1692,10 +1763,17 @@
         runs = generateForTotal(cycle, durationMin, variancePct, defaultGap, total, minQ, maxQ, spread);
       } else {
         runs = generateSchedule(cycle, durationMin, variancePct, defaultGap);
-        if (s) runs.forEach(r => { r[1] = Math.min(Math.max(r[1], minQ), maxQ); });
+        runs.forEach(r => { r[1] = Math.min(Math.max(r[1], minQ), maxQ); });
       }
     } catch (e) {
       alert(e.message);
+      return;
+    }
+
+    // Strict guard: never leave any run below service minimum
+    const invalidRun = runs.find(([, q]) => q < minQ || q > maxQ);
+    if (invalidRun) {
+      alert(`Could not fit total ${total || ''} with service limits (min ${minQ}, max ${maxQ}). Adjust Total or Number of runs.`);
       return;
     }
 
@@ -1712,6 +1790,18 @@
   //  rePairCompanion — Parameterized pairing for Likes, Shares & Saves
   //  Strictly enforces service minimum per drop (no drop below service min allowed)
   // ================================================================
+  function clearCompanionDrops(cfg, warnMsg = '') {
+    const ids = getCompIds(cfg);
+    state.companions[cfg.key] = {};
+    if (cfg.supportsCustomComments) state.customCommentsMap = {};
+    if (warnMsg && el(ids.svcInfo)) {
+      el(ids.svcInfo).style.color = 'var(--danger)';
+      el(ids.svcInfo).textContent = warnMsg;
+    }
+    renderAutoTable();
+    updateAutoStats();
+  }
+
   function rePairCompanion(typeKey = 'likes', showAlerts = false) {
     if (!state.scheduleRuns.length) {
       if (showAlerts) alert("Generate or add view runs first.");
@@ -1724,28 +1814,42 @@
 
     const compSidTxt = el(ids.sid).value.trim();
 
-    if ((!compSidTxt || !/^\d+$/.test(compSidTxt)) && showAlerts) {
-      alert(`Enter a numeric Service ID for ${cfg.label}.`);
+    if (!compSidTxt || !/^\d+$/.test(compSidTxt)) {
+      clearCompanionDrops(cfg);
+      if (showAlerts) alert(`Enter a numeric Service ID for ${cfg.label}.`);
       return;
     }
 
-    const { csid, compS, sMin, sMax } = getCompLimits(cfg, compSidTxt);
+    const { compS, sMin, sMax } = getCompLimits(cfg, compSidTxt);
+    if (!compS && Object.keys(state.services || {}).length > 0) {
+      clearCompanionDrops(cfg, `⚠ Service #${compSidTxt} not found in panel`);
+      if (showAlerts) alert(`${cfg.label} Service #${compSidTxt} was not found in your connected panel.`);
+      return;
+    }
+
+    if (compS && el(ids.svcInfo)) {
+      el(ids.svcInfo).style.color = 'var(--muted)';
+      el(ids.svcInfo).textContent = `${compS.name.slice(0, 24)} (min ${compS.min}, max ${compS.max}, rate ${compS.rate})`;
+    }
 
     // 1. Total Quantity or Qty per drop
     const totalTxt = el(ids.totalQty).value.trim();
     let compTotal = null;
     if (totalTxt) {
       if (!/^\d+$/.test(totalTxt) || parseInt(totalTxt) < 1) {
+        clearCompanionDrops(cfg, `⚠ Enter a whole number Total >= ${sMin}`);
         if (showAlerts) alert(`${cfg.label} Total quantity must be a whole number, 1 or more (or leave empty).`);
         return;
       }
       compTotal = parseInt(totalTxt);
       if (compTotal < sMin) {
+        clearCompanionDrops(cfg, `⚠ Total ${compTotal} is below service min ${sMin}`);
         if (showAlerts) alert(`Total ${lowerLabel} quantity ${compTotal} is below the service minimum (${sMin}).`);
         return;
       }
-      if (compS && !(compS.min <= compTotal && compTotal <= compS.max)) {
-        if (showAlerts) alert(`Total ${lowerLabel} quantity ${compTotal} is outside service limits (${compS.min} to ${compS.max}).`);
+      if (compTotal > sMax) {
+        clearCompanionDrops(cfg, `⚠ Total ${compTotal} is above service max ${sMax}`);
+        if (showAlerts) alert(`Total ${lowerLabel} quantity ${compTotal} is outside service limits (${sMin} to ${sMax}).`);
         return;
       }
     }
@@ -1754,6 +1858,7 @@
     let baseQty = sMin;
     if (qtyTxt && !qtyTxt.includes('-')) {
       if (!/^\d+$/.test(qtyTxt) || parseInt(qtyTxt) < 1) {
+        clearCompanionDrops(cfg, `⚠ Invalid Qty/drop (min ${sMin})`);
         if (showAlerts) alert(`${cfg.label} quantity per drop must be 1 or more.`);
         return;
       }
@@ -1761,7 +1866,7 @@
     }
     if (baseQty < sMin) {
       baseQty = sMin;
-      el(ids.dropQty).value = sMin;
+      if (qtyTxt) el(ids.dropQty).value = sMin;
     }
 
     // 2. Delivery Time / Duration
@@ -1877,12 +1982,13 @@
         let rawQtys = rawWeights.map(w => Math.max(floorB, Math.min(ceilB, Math.round(compTotal * w / Math.max(1e-9, weightSum)))));
         let diff = compTotal - rawQtys.reduce((a, b) => a + b, 0);
         const step = diff > 0 ? 1 : -1;
-        let ptr = 0;
-        while (diff !== 0 && ptr < k * 20) {
-          const tgt = ptr % k;
-          if (step > 0 && rawQtys[tgt] < ceilB) { rawQtys[tgt] += 1; diff -= 1; }
-          else if (step < 0 && rawQtys[tgt] > floorB) { rawQtys[tgt] -= 1; diff += 1; }
-          ptr++;
+        let madeProgress = true;
+        while (diff !== 0 && madeProgress) {
+          madeProgress = false;
+          for (let tgt = 0; tgt < k && diff !== 0; tgt++) {
+            if (step > 0 && rawQtys[tgt] < ceilB) { rawQtys[tgt] += 1; diff -= 1; madeProgress = true; }
+            else if (step < 0 && rawQtys[tgt] > floorB) { rawQtys[tgt] -= 1; diff += 1; madeProgress = true; }
+          }
         }
         quantities = rawQtys;
       } else {
